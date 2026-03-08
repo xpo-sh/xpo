@@ -287,7 +287,7 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     let html = format!(
         "<!DOCTYPE html>\
         <html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-        <title>{code} {body}</title>\
+        <title>{code} - xpo.sh</title>\
         <style>\
         *{{margin:0;padding:0;box-sizing:border-box}}\
         body{{font-family:'SF Mono','JetBrains Mono','Fira Code',Menlo,Consolas,monospace;\
