@@ -17,4 +17,4 @@ path = "src/main.rs"
 xpo-core = { path = "../xpo-core" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
