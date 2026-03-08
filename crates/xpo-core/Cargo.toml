@@ -10,3 +10,6 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+jsonwebtoken = "9"
