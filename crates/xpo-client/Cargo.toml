@@ -20,3 +20,5 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 time = "0.3"
+console = "0.15"
+indicatif = "0.17"

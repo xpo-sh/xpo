@@ -47,6 +47,8 @@ enum DevCommands {
     Stop,
     #[command(about = "Check setup status and diagnose issues")]
     Doctor,
+    #[command(about = "Remove CA, untrust it, and remove port forwarding")]
+    Uninstall,
 }
 
 #[tokio::main]
@@ -64,6 +66,7 @@ async fn main() {
                 println!("  Coming soon.");
                 Ok(())
             }
+            Some(DevCommands::Uninstall) => dev::uninstall::run(),
             None => {
                 if let Some(_port) = args.port {
                     println!("  Coming soon. Run `xpo dev setup` first.");

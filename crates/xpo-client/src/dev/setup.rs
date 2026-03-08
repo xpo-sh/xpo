@@ -1,50 +1,87 @@
 use crate::dev::ca;
+use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::process::{Command, Stdio};
 
+fn spinner(msg: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+            .template("  {spinner:.cyan} {msg}")
+            .unwrap(),
+    );
+    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    pb.set_message(msg.to_string());
+    pb
+}
+
+fn done(msg: &str) {
+    println!("  {} {msg}", style("✓").green().bold());
+}
+
+fn done_dim(msg: &str, detail: &str) {
+    println!(
+        "  {} {msg} {}",
+        style("✓").green().bold(),
+        style(detail).dim()
+    );
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    println!("  xpo dev setup\n");
+    println!();
+    println!("  {}", style("xpo dev setup").bold());
+    println!();
 
     step_generate_ca()?;
     step_trust_ca()?;
     step_port_forwarding()?;
 
-    println!("\n  Setup complete! Run: xpo dev 3000 -n myapp");
+    println!();
+    println!(
+        "  {} Run: {}",
+        style("Setup complete!").green().bold(),
+        style("xpo dev 3000 -n myapp").cyan()
+    );
+    println!();
     Ok(())
 }
 
 fn step_generate_ca() -> Result<(), Box<dyn std::error::Error>> {
     if ca::ca_exists() {
-        println!("  1. Root CA already exists");
-        println!("     {}", ca::ca_cert_path().display());
+        done_dim("Root CA exists", &ca::ca_cert_path().display().to_string());
     } else {
-        println!("  1. Generating root CA...");
+        let sp = spinner("Generating root CA...");
         ca::generate_ca()?;
-        println!("     {}", ca::ca_cert_path().display());
-        println!("     Root CA created (P-256 ECDSA, valid 10 years)");
+        sp.finish_and_clear();
+        done_dim(
+            "Root CA created (P-256 ECDSA, 10yr)",
+            &ca::ca_cert_path().display().to_string(),
+        );
     }
     Ok(())
 }
 
 fn step_trust_ca() -> Result<(), Box<dyn std::error::Error>> {
     if is_ca_trusted() {
-        println!("  2. CA already trusted");
+        done("CA trusted in system keychain");
     } else {
-        println!("  2. Trusting CA in system keychain...");
-        println!("     sudo required");
+        let sp = spinner("Trusting CA in system keychain (sudo)...");
         trust_ca_platform()?;
-        println!("     CA trusted");
+        sp.finish_and_clear();
+        done("CA trusted in system keychain");
     }
     Ok(())
 }
 
 fn step_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
     if is_port_forwarding_active() {
-        println!("  3. Port forwarding already active");
+        done_dim("Port forwarding active", "443→10443, 80→10080");
     } else {
-        println!("  3. Setting up port forwarding (443 -> 10443, 80 -> 10080)...");
-        println!("     sudo required");
+        let sp = spinner("Setting up port forwarding (sudo)...");
         setup_port_forwarding_platform()?;
-        println!("     Port forwarding active");
+        sp.finish_and_clear();
+        done_dim("Port forwarding active", "443→10443, 80→10080");
     }
     Ok(())
 }
@@ -176,7 +213,8 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
     println!(
-        "     Manual trust required: add {} to your trust store",
+        "  {} Manual trust required: add {} to your trust store",
+        style("!").yellow().bold(),
         ca::ca_cert_path().display()
     );
     Ok(())
@@ -263,7 +301,10 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
-    println!("     Port forwarding not supported on this platform");
+    println!(
+        "  {} Port forwarding not supported on this platform",
+        style("!").yellow().bold()
+    );
     println!("     Proxy will listen on :10443 and :10080 directly");
     Ok(())
 }
