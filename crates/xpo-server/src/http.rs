@@ -1,8 +1,11 @@
-use crate::state::{PendingRequest, SharedState, TunnelMessage};
+use crate::state::{ActiveStream, PendingRequest, SharedState, TunnelMessage};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::info;
 use xpo_core::StreamId;
 
 pub async fn handle_http(
@@ -13,9 +16,10 @@ pub async fn handle_http(
         .headers()
         .get("host")
         .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
-    let subdomain = extract_subdomain(host);
+    let subdomain = extract_subdomain(&host);
 
     if subdomain.is_empty() {
         return Ok(text_response(StatusCode::NOT_FOUND, "no tunnel found"));
@@ -31,6 +35,16 @@ pub async fn handle_http(
         }
     };
 
+    let is_ws = req
+        .headers()
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+
+    if is_ws {
+        return handle_ws_upgrade(req, state, subdomain, tunnel_tx, host).await;
+    }
+
     let stream_id = StreamId::new();
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
@@ -38,7 +52,7 @@ pub async fn handle_http(
         .pending
         .insert(stream_id, PendingRequest { response_tx });
 
-    let raw_request = serialize_request(&req, host).await;
+    let raw_request = serialize_request(&req, &host).await;
 
     if tunnel_tx
         .send(TunnelMessage::HttpRequest {
@@ -71,6 +85,124 @@ pub async fn handle_http(
             ))
         }
     }
+}
+
+async fn handle_ws_upgrade(
+    req: Request<hyper::body::Incoming>,
+    state: SharedState,
+    subdomain: String,
+    tunnel_tx: tokio::sync::mpsc::UnboundedSender<TunnelMessage>,
+    host: String,
+) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    let stream_id = StreamId::new();
+    let raw_request = serialize_request(&req, &host).await;
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    state
+        .pending
+        .insert(stream_id, PendingRequest { response_tx });
+
+    if tunnel_tx
+        .send(TunnelMessage::HttpRequest {
+            stream_id,
+            raw_request,
+        })
+        .is_err()
+    {
+        state.pending.remove(&stream_id);
+        return Ok(text_response(
+            StatusCode::BAD_GATEWAY,
+            "tunnel disconnected",
+        ));
+    }
+
+    let raw_response = match tokio::time::timeout(Duration::from_secs(10), response_rx).await {
+        Ok(Ok(data)) => data,
+        _ => {
+            state.pending.remove(&stream_id);
+            return Ok(text_response(StatusCode::BAD_GATEWAY, "ws upgrade failed"));
+        }
+    };
+
+    let resp_str = String::from_utf8_lossy(&raw_response);
+    if !resp_str.starts_with("HTTP/1.1 101") {
+        return Ok(parse_response(&raw_response));
+    }
+
+    info!(subdomain = %subdomain, "ws upgrade");
+
+    let (from_client_tx, mut from_client_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.streams.insert(
+        stream_id,
+        ActiveStream {
+            from_client_tx,
+            tunnel_subdomain: subdomain,
+        },
+    );
+
+    let tunnel_tx_clone = tunnel_tx;
+    let state_clone = state.clone();
+
+    tokio::spawn(async move {
+        let upgraded = match hyper::upgrade::on(req).await {
+            Ok(u) => u,
+            Err(_) => {
+                state_clone.streams.remove(&stream_id);
+                return;
+            }
+        };
+
+        let mut io = TokioIo::new(upgraded);
+        let mut buf = [0u8; 8192];
+
+        loop {
+            tokio::select! {
+                result = io.read(&mut buf) => {
+                    match result {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = tunnel_tx_clone.send(TunnelMessage::StreamData {
+                                stream_id,
+                                data: buf[..n].to_vec(),
+                            });
+                        }
+                    }
+                }
+                data = from_client_rx.recv() => {
+                    match data {
+                        Some(bytes) => {
+                            if io.write_all(&bytes).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        let _ = tunnel_tx_clone.send(TunnelMessage::StreamEnd { stream_id });
+        state_clone.streams.remove(&stream_id);
+    });
+
+    let mut resp = Response::new(Full::new(Bytes::new()));
+    *resp.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+
+    let header_str = String::from_utf8_lossy(&raw_response);
+    for line in header_str.lines().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim();
+            let value = value.trim();
+            if let (Ok(hn), Ok(hv)) = (name.parse::<hyper::header::HeaderName>(), value.parse()) {
+                resp.headers_mut().insert(hn, hv);
+            }
+        }
+    }
+
+    Ok(resp)
 }
 
 fn extract_subdomain(host: &str) -> String {
@@ -135,14 +267,19 @@ fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim();
             let value = value.trim();
-            if !name.eq_ignore_ascii_case("transfer-encoding") {
-                builder = builder.header(name, value);
+            if name.eq_ignore_ascii_case("transfer-encoding")
+                || name.eq_ignore_ascii_case("content-length")
+            {
+                continue;
             }
+            builder = builder.header(name, value);
         }
     }
 
+    let body_bytes = Bytes::copy_from_slice(body);
+    builder = builder.header("content-length", body_bytes.len());
     builder
-        .body(Full::new(Bytes::copy_from_slice(body)))
+        .body(Full::new(body_bytes))
         .unwrap_or_else(|_| text_response(status, "response build error"))
 }
 

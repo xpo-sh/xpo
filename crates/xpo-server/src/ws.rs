@@ -139,6 +139,16 @@ pub async fn handle_websocket(stream: TcpStream, state: SharedState) {
                                     break;
                                 }
                             }
+                            Some(TunnelMessage::StreamData { stream_id, data }) => {
+                                let pkt = Packet::data(stream_id, data).encode();
+                                if ws_write.send(Message::Binary(pkt)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(TunnelMessage::StreamEnd { stream_id }) => {
+                                let pkt = Packet::end(stream_id).encode();
+                                let _ = ws_write.send(Message::Binary(pkt)).await;
+                            }
                             None => break,
                         }
                     }
@@ -156,10 +166,16 @@ pub async fn handle_websocket(stream: TcpStream, state: SharedState) {
                         if let Ok(packet) = Packet::decode(&data) {
                             match packet.packet_type {
                                 PacketType::Pong => {}
-                                PacketType::Data | PacketType::End => {
+                                PacketType::Data => {
                                     if let Some((_, pending)) = state_clone.pending.remove(&packet.stream_id) {
                                         let _ = pending.response_tx.send(packet.payload);
+                                    } else if let Some(stream) = state_clone.streams.get(&packet.stream_id) {
+                                        let _ = stream.from_client_tx.send(packet.payload);
                                     }
+                                }
+                                PacketType::End => {
+                                    state_clone.pending.remove(&packet.stream_id);
+                                    state_clone.streams.remove(&packet.stream_id);
                                 }
                                 _ => {}
                             }

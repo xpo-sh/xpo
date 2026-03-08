@@ -56,7 +56,10 @@ async fn main() {
                     let s = s.clone();
                     async move { http::handle_http(req, s).await }
                 });
-                let _ = http1::Builder::new().serve_connection(io, svc).await;
+                let _ = http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .with_upgrades()
+                    .await;
             });
         }
     });

@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 
 mod dev;
+mod tunnel;
 
 #[derive(Parser)]
 #[command(
@@ -89,14 +90,8 @@ async fn main() {
             subdomain,
             domain: _,
         } => {
-            let sub_display = subdomain
-                .as_deref()
-                .map(|s| format!("{s}.xpo.sh"))
-                .unwrap_or_else(|| "<random>.xpo.sh".to_string());
-            println!("  Tunnel establishing...");
-            println!("  https://{sub_display} -> localhost:{port}");
-            println!("\n  Coming soon. Visit https://xpo.sh");
-            Ok(())
+            let server = std::env::var("XPO_SERVER").unwrap_or_else(|_| "localhost:8081".into());
+            tunnel::run(port, subdomain, &server).await
         }
         Commands::Login => {
             println!("  Coming soon. Visit https://xpo.sh");

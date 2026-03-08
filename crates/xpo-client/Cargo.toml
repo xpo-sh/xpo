@@ -27,3 +27,5 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 terminal_size = "0.4"
+futures-util = "0.3"
+dashmap = "6"
