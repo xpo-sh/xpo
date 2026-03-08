@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "xpo", about = "Expose local services via secure tunnels", version)]
+#[command(
+    name = "xpo",
+    about = "Expose local services via secure tunnels",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -25,7 +29,11 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Share { port, subdomain, domain: _ } => {
+        Commands::Share {
+            port,
+            subdomain,
+            domain: _,
+        } => {
             let sub_display = subdomain
                 .as_deref()
                 .map(|s| format!("{s}.xpo.sh"))
