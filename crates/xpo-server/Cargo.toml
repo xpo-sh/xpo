@@ -14,4 +14,11 @@ path = "src/main.rs"
 xpo-core = { path = "../xpo-core" }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+hyper-util = { version = "0.1", features = ["tokio", "http1"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.24"
+dashmap = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.9"
+futures-util = "0.3"
