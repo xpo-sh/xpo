@@ -5,7 +5,6 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::info;
 use xpo_core::StreamId;
 
 pub async fn handle_http(
@@ -22,7 +21,7 @@ pub async fn handle_http(
     let subdomain = extract_subdomain(&host);
 
     if subdomain.is_empty() {
-        return Ok(text_response(StatusCode::NOT_FOUND, "no tunnel found"));
+        return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found"));
     }
 
     let tunnel_tx = match state.tunnels.get(&subdomain) {
@@ -30,7 +29,7 @@ pub async fn handle_http(
         None => {
             return Ok(text_response(
                 StatusCode::NOT_FOUND,
-                &format!("tunnel '{subdomain}' not found"),
+                &format!("<b>{subdomain}</b>.xpo.sh is not connected"),
             ));
         }
     };
@@ -129,7 +128,7 @@ async fn handle_ws_upgrade(
         return Ok(parse_response(&raw_response));
     }
 
-    info!(subdomain = %subdomain, "ws upgrade");
+    tracing::debug!(subdomain = %subdomain, "ws upgrade");
 
     let (from_client_tx, mut from_client_rx) = tokio::sync::mpsc::unbounded_channel();
     state.streams.insert(
@@ -284,10 +283,48 @@ fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
 }
 
 fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
+    let code = status.as_u16();
+    let html = format!(
+        "<!DOCTYPE html>\
+        <html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+        <title>{code} {body}</title>\
+        <style>\
+        *{{margin:0;padding:0;box-sizing:border-box}}\
+        body{{font-family:'SF Mono','JetBrains Mono','Fira Code',Menlo,Consolas,monospace;\
+        display:flex;align-items:center;justify-content:center;height:100vh;\
+        background:#0a0a0f;color:#e2e2e8}}\
+        .c{{text-align:center}}\
+        .code{{font-size:96px;font-weight:800;line-height:1;color:#1e1e2e}}\
+        .msg{{margin:16px 0 0;font-size:15px}}\
+        .msg b{{color:#22d3ee}}\
+        .hint{{color:#555570;font-size:13px;margin:8px 0 0}}\
+        a{{color:#22d3ee;text-decoration:none}}\
+        a:hover{{text-decoration:underline}}\
+        .brand{{position:fixed;bottom:24px;color:#555570;font-size:12px}}\
+        .brand span{{color:#22d3ee;font-weight:600}}\
+        @media(prefers-color-scheme:light){{\
+        body{{background:#f5f6f8;color:#111827}}\
+        .code{{color:#e2e4e9}}\
+        .msg b{{color:#0891b2}}\
+        .hint{{color:#6b7280}}\
+        a{{color:#0891b2}}\
+        .brand{{color:#6b7280}}\
+        .brand span{{color:#0891b2}}\
+        }}\
+        </style></head>\
+        <body><div class=\"c\">\
+        <p class=\"code\">{code}</p>\
+        <p class=\"msg\">{body}</p>\
+        <p class=\"hint\"><a href=\"https://xpo.sh\">xpo.sh</a></p>\
+        </div>\
+        <div class=\"brand\"><span>xpo</span>.sh</div>\
+        </body></html>"
+    );
     Response::builder()
         .status(status)
-        .header("content-type", "text/plain")
-        .body(Full::new(Bytes::from(body.to_string())))
+        .header("content-type", "text/html; charset=utf-8")
+        .header("content-length", html.len())
+        .body(Full::new(Bytes::from(html)))
         .unwrap()
 }
 
