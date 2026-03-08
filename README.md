@@ -1,12 +1,5 @@
 <p align="center">
-  <img src="https://xpo.sh/favicon.svg" width="64" height="64" alt="xpo" />
-</p>
-
-<h1 align="center">xpo</h1>
-
-<p align="center">
-  Expose local services to the internet via secure tunnels.<br/>
-  A modern, open-source alternative to ngrok — written in Rust.
+  <a href="https://xpo.sh"><img src="assets/banner.png" alt="xpo.sh — Expose local services via secure tunnels" /></a>
 </p>
 
 <p align="center">
