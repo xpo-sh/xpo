@@ -351,3 +351,209 @@ async fn proxy_connection(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_page_502_structure() {
+        let page = error_page(
+            502,
+            "Bad Gateway",
+            "Cannot reach <b>localhost:3000</b>",
+            "Make sure your dev server is running",
+        );
+        assert!(page.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+        assert!(page.contains("Content-Type: text/html"));
+        assert!(page.contains("Content-Length:"));
+        assert!(page.contains("<!DOCTYPE html>"));
+        assert!(page.contains("<p class=\"code\">502</p>"));
+        assert!(page.contains("localhost:3000"));
+        assert!(page.contains("xpo"));
+    }
+
+    #[test]
+    fn error_page_504_structure() {
+        let page = error_page(
+            504,
+            "Gateway Timeout",
+            "<b>localhost:3000</b> did not respond",
+            "Server may be restarting",
+        );
+        assert!(page.starts_with("HTTP/1.1 504 Gateway Timeout\r\n"));
+        assert!(page.contains("<p class=\"code\">504</p>"));
+        assert!(page.contains("did not respond"));
+    }
+
+    #[test]
+    fn error_page_has_dark_and_light_theme() {
+        let page = error_page(502, "Bad Gateway", "test", "hint");
+        assert!(page.contains("background:#0a0a0f"));
+        assert!(page.contains("prefers-color-scheme:light"));
+        assert!(page.contains("background:#f5f6f8"));
+    }
+
+    #[test]
+    fn error_page_content_length_matches_body() {
+        let page = error_page(502, "Bad Gateway", "test", "hint");
+        let parts: Vec<&str> = page.splitn(2, "\r\n\r\n").collect();
+        let headers = parts[0];
+        let body = parts[1];
+        let cl: usize = headers
+            .lines()
+            .find(|l| l.starts_with("Content-Length:"))
+            .unwrap()
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(cl, body.len());
+    }
+
+    #[tokio::test]
+    async fn http_redirect_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let domain = "myapp.test".to_string();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: https://{domain}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: myapp.test\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(response.starts_with("HTTP/1.1 301"));
+        assert!(response.contains("Location: https://myapp.test/"));
+    }
+
+    fn test_tls_pair() -> (
+        TlsAcceptor,
+        tokio_rustls::TlsConnector,
+        CertificateDer<'static>,
+    ) {
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::from(rustls_pki_types::PrivatePkcs8KeyDer::from(
+            key_pair.serialize_der(),
+        ));
+
+        let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert_der.clone()).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+        (
+            TlsAcceptor::from(Arc::new(server_config)),
+            tokio_rustls::TlsConnector::from(Arc::new(client_config)),
+            cert_der,
+        )
+    }
+
+    #[tokio::test]
+    async fn e2e_proxy_200() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+            stream.shutdown().await.ok();
+        });
+
+        let (acceptor, connector, _) = test_tls_pair();
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = proxy_listener.accept().await.unwrap();
+            let _ = proxy_connection(acceptor, stream, upstream_port).await;
+        });
+
+        let tcp = TcpStream::connect(proxy_addr).await.unwrap();
+        let server_name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+        let mut tls = connector.connect(server_name, tcp).await.unwrap();
+
+        tls.write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut response = Vec::new();
+        let mut buf = [0u8; 4096];
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match tokio::time::timeout_at(deadline, tls.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
+                _ => break,
+            }
+        }
+        let resp_str = String::from_utf8_lossy(&response);
+
+        assert!(resp_str.contains("200 OK"));
+        assert!(resp_str.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn e2e_proxy_502_upstream_down() {
+        let (acceptor, connector, _) = test_tls_pair();
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = proxy_listener.accept().await.unwrap();
+            let _ = proxy_connection(acceptor, stream, 19999).await;
+        });
+
+        let tcp = TcpStream::connect(proxy_addr).await.unwrap();
+        let server_name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+        let mut tls = connector.connect(server_name, tcp).await.unwrap();
+
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut response = Vec::new();
+        let _ = tls.read_to_end(&mut response).await;
+        let resp_str = String::from_utf8_lossy(&response);
+
+        assert!(resp_str.contains("502 Bad Gateway"));
+        assert!(resp_str.contains("Cannot reach"));
+    }
+}

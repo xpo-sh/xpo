@@ -67,14 +67,7 @@ async fn main() {
             None => {
                 if let Some(port) = args.port {
                     let name = args.name.unwrap_or_else(|| "localhost".to_string());
-                    if !name
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                        || name.starts_with('-')
-                        || name.ends_with('-')
-                        || name.is_empty()
-                        || name.len() > 63
-                    {
+                    if !is_valid_name(&name) {
                         eprintln!(
                             "  {} Invalid name: '{}'. Use lowercase letters, digits, and hyphens (a-z, 0-9, -).",
                             console::style("✗").red().bold(),
@@ -119,5 +112,45 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("  Error: {e}");
         std::process::exit(1);
+    }
+}
+
+fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_names() {
+        assert!(is_valid_name("myapp"));
+        assert!(is_valid_name("my-app"));
+        assert!(is_valid_name("app123"));
+        assert!(is_valid_name("a"));
+        assert!(is_valid_name("my-cool-app-2"));
+        assert!(is_valid_name("localhost"));
+        assert!(is_valid_name(&"a".repeat(63)));
+    }
+
+    #[test]
+    fn invalid_names() {
+        assert!(!is_valid_name(""));
+        assert!(!is_valid_name("-myapp"));
+        assert!(!is_valid_name("myapp-"));
+        assert!(!is_valid_name("MyApp"));
+        assert!(!is_valid_name("my_app"));
+        assert!(!is_valid_name("my app"));
+        assert!(!is_valid_name("my.app"));
+        assert!(!is_valid_name("../hack"));
+        assert!(!is_valid_name("../../etc/passwd"));
+        assert!(!is_valid_name(&"a".repeat(64)));
     }
 }
