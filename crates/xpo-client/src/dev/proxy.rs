@@ -121,6 +121,7 @@ async fn handle_connection(acceptor: TlsAcceptor, tcp_stream: TcpStream, upstrea
         if !msg.contains("connection reset")
             && !msg.contains("broken pipe")
             && !msg.contains("unexpected eof")
+            && !msg.contains("early eof")
             && !msg.contains("close_notify")
         {
             eprintln!("  {} {msg}", style("✗").red().dim());
@@ -128,77 +129,56 @@ async fn handle_connection(acceptor: TlsAcceptor, tcp_stream: TcpStream, upstrea
     }
 }
 
-async fn proxy_connection(
-    acceptor: TlsAcceptor,
-    tcp_stream: TcpStream,
-    upstream_port: u16,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let start = std::time::Instant::now();
-
-    let tls_stream = acceptor.accept(tcp_stream).await?;
-    let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
-
-    let mut upstream = TcpStream::connect(("127.0.0.1", upstream_port)).await?;
-    let (mut up_read, mut up_write) = upstream.split();
-
-    let mut request_line = Vec::with_capacity(512);
-    let mut byte = [0u8; 1];
-    loop {
-        tls_read.read_exact(&mut byte).await?;
-        request_line.push(byte[0]);
-        if request_line.ends_with(b"\r\n") {
-            break;
-        }
-        if request_line.len() > 8192 {
-            break;
-        }
-    }
-
-    up_write.write_all(&request_line).await?;
-
-    let req_str = String::from_utf8_lossy(&request_line);
-    let parts: Vec<&str> = req_str.split_whitespace().collect();
-    let method = parts.first().copied().unwrap_or("???");
-    let path = parts.get(1).copied().unwrap_or("/");
-
-    let client_to_server = tokio::io::copy(&mut tls_read, &mut up_write);
-    let server_to_client = async {
-        let mut resp_first_line = Vec::with_capacity(128);
-        let mut b = [0u8; 1];
-        loop {
-            up_read.read_exact(&mut b).await?;
-            resp_first_line.push(b[0]);
-            if resp_first_line.ends_with(b"\r\n") {
-                break;
-            }
-            if resp_first_line.len() > 1024 {
-                break;
-            }
-        }
-        tls_write.write_all(&resp_first_line).await?;
-
-        let resp_str = String::from_utf8_lossy(&resp_first_line);
-        let status = resp_str
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("???")
-            .to_string();
-
-        let _ = tokio::io::copy(&mut up_read, &mut tls_write).await;
-
-        Ok::<String, Box<dyn std::error::Error + Send + Sync>>(status)
+fn error_page(status_code: u16, title: &str, message: &str, hint: &str) -> String {
+    let body = format!(
+        "<!DOCTYPE html>\
+        <html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+        <title>{status_code} {title}</title>\
+        <style>\
+        *{{margin:0;padding:0;box-sizing:border-box}}\
+        body{{font-family:'JetBrains Mono','Fira Code','SF Mono',Menlo,Consolas,monospace;\
+        display:flex;align-items:center;justify-content:center;height:100vh;\
+        background:#0a0a0f;color:#e2e2e8}}\
+        .c{{text-align:center}}\
+        .code{{font-size:96px;font-weight:800;line-height:1;color:#1e1e2e}}\
+        .msg{{margin:16px 0 0;font-size:15px}}\
+        .msg b{{color:#22d3ee}}\
+        .hint{{color:#555570;font-size:13px;margin:8px 0 0}}\
+        .brand{{position:fixed;bottom:24px;color:#555570;font-size:12px}}\
+        .brand span{{color:#22d3ee;font-weight:600}}\
+        @media(prefers-color-scheme:light){{\
+        body{{background:#f5f6f8;color:#111827}}\
+        .code{{color:#e2e4e9}}\
+        .msg b{{color:#0891b2}}\
+        .hint{{color:#6b7280}}\
+        .brand{{color:#6b7280}}\
+        .brand span{{color:#0891b2}}\
+        }}\
+        </style></head>\
+        <body><div class=\"c\">\
+        <p class=\"code\">{status_code}</p>\
+        <p class=\"msg\">{message}</p>\
+        <p class=\"hint\">{hint}</p>\
+        </div>\
+        <div class=\"brand\"><span>xpo</span> dev</div>\
+        </body></html>"
+    );
+    let status_text = match status_code {
+        502 => "Bad Gateway",
+        504 => "Gateway Timeout",
+        _ => title,
     };
+    format!(
+        "HTTP/1.1 {status_code} {status_text}\r\n\
+        Content-Type: text/html; charset=utf-8\r\n\
+        Content-Length: {}\r\n\
+        Connection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
 
-    let (_, status_result) = tokio::try_join!(
-        async {
-            client_to_server.await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        },
-        server_to_client
-    )?;
-
-    let duration = start.elapsed();
-    let status = &status_result;
+fn log_request(method: &str, path: &str, status: &str, duration: std::time::Duration) {
     let status_code: u16 = status.parse().unwrap_or(0);
 
     let styled_status = if status_code >= 500 {
@@ -213,15 +193,138 @@ async fn proxy_connection(
         style(status).dim()
     };
 
-    let styled_method = style(method).bold();
-
     println!(
         "  {} {} {} {}",
-        styled_method,
+        style(method).bold(),
         path,
         styled_status,
         style(format!("{}ms", duration.as_millis())).dim()
     );
+}
+
+async fn proxy_connection(
+    acceptor: TlsAcceptor,
+    tcp_stream: TcpStream,
+    upstream_port: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let start = std::time::Instant::now();
+
+    let tls_stream = acceptor.accept(tcp_stream).await?;
+    let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
+
+    let mut request_line = Vec::with_capacity(512);
+    let mut byte = [0u8; 1];
+    loop {
+        tls_read.read_exact(&mut byte).await?;
+        request_line.push(byte[0]);
+        if request_line.ends_with(b"\r\n") {
+            break;
+        }
+        if request_line.len() > 8192 {
+            break;
+        }
+    }
+
+    let req_str = String::from_utf8_lossy(&request_line);
+    let parts: Vec<&str> = req_str.split_whitespace().collect();
+    let method = parts.first().copied().unwrap_or("???").to_string();
+    let path = parts.get(1).copied().unwrap_or("/").to_string();
+
+    let mut upstream = match TcpStream::connect(("127.0.0.1", upstream_port)).await {
+        Ok(s) => s,
+        Err(_) => {
+            let resp = error_page(
+                502,
+                "Bad Gateway",
+                &format!("Cannot reach <b>localhost:{upstream_port}</b>"),
+                "Make sure your dev server is running",
+            );
+            let _ = tls_write.write_all(resp.as_bytes()).await;
+            let _ = tls_write.shutdown().await;
+            log_request(&method, &path, "502", start.elapsed());
+            return Ok(());
+        }
+    };
+
+    let (mut up_read, mut up_write) = upstream.split();
+
+    up_write.write_all(&request_line).await?;
+
+    let captured_status = Arc::new(std::sync::Mutex::new(String::from("---")));
+    let status_for_copy = captured_status.clone();
+
+    let client_to_server = async {
+        tokio::io::copy(&mut tls_read, &mut up_write).await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    };
+    let server_to_client = async {
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut resp_first_line = Vec::with_capacity(128);
+            let mut b = [0u8; 1];
+            loop {
+                if up_read.read_exact(&mut b).await.is_err() {
+                    return resp_first_line;
+                }
+                resp_first_line.push(b[0]);
+                if resp_first_line.ends_with(b"\r\n") {
+                    return resp_first_line;
+                }
+                if resp_first_line.len() > 1024 {
+                    return resp_first_line;
+                }
+            }
+        })
+        .await;
+
+        let resp_first_line = match timeout {
+            Ok(line) => line,
+            Err(_) => {
+                let resp = error_page(
+                    504,
+                    "Gateway Timeout",
+                    &format!("<b>localhost:{upstream_port}</b> did not respond"),
+                    "Server may be restarting",
+                );
+                let _ = tls_write.write_all(resp.as_bytes()).await;
+                *status_for_copy.lock().unwrap() = "504".to_string();
+                return Ok(());
+            }
+        };
+
+        if resp_first_line.is_empty() {
+            let resp = error_page(
+                502,
+                "Bad Gateway",
+                &format!("Connection to <b>localhost:{upstream_port}</b> lost"),
+                "Server may have stopped",
+            );
+            let _ = tls_write.write_all(resp.as_bytes()).await;
+            *status_for_copy.lock().unwrap() = "502".to_string();
+            return Ok(());
+        }
+
+        let _ = tls_write.write_all(&resp_first_line).await;
+
+        let resp_str = String::from_utf8_lossy(&resp_first_line);
+        let status = resp_str
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("???")
+            .to_string();
+
+        *status_for_copy.lock().unwrap() = status;
+
+        let _ = tokio::io::copy(&mut up_read, &mut tls_write).await;
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    };
+
+    let _ = tokio::try_join!(client_to_server, server_to_client);
+
+    let duration = start.elapsed();
+    let status_str = captured_status.lock().unwrap().clone();
+
+    log_request(&method, &path, &status_str, duration);
 
     Ok(())
 }
