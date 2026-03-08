@@ -60,7 +60,25 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
 
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
-    let listener = TcpListener::bind("0.0.0.0:10443").await?;
+    let listener = TcpListener::bind("127.0.0.1:10443").await?;
+    let http_listener = TcpListener::bind("127.0.0.1:10080").await?;
+
+    let http_domain = domain.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Ok((mut stream, _)) = http_listener.accept().await {
+                let d = http_domain.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let resp = format!(
+                        "HTTP/1.1 301 Moved Permanently\r\nLocation: https://{d}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                });
+            }
+        }
+    });
 
     println!();
     println!("  {}", style("xpo dev").bold());
@@ -263,7 +281,7 @@ async fn proxy_connection(
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     let server_to_client = async {
-        let timeout = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let mut resp_first_line = Vec::with_capacity(128);
             let mut b = [0u8; 1];
             loop {

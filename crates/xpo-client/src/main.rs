@@ -67,6 +67,21 @@ async fn main() {
             None => {
                 if let Some(port) = args.port {
                     let name = args.name.unwrap_or_else(|| "localhost".to_string());
+                    if !name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                        || name.starts_with('-')
+                        || name.ends_with('-')
+                        || name.is_empty()
+                        || name.len() > 63
+                    {
+                        eprintln!(
+                            "  {} Invalid name: '{}'. Use lowercase letters, digits, and hyphens (a-z, 0-9, -).",
+                            console::style("✗").red().bold(),
+                            name
+                        );
+                        std::process::exit(1);
+                    }
                     dev::proxy::run(port, &name).await
                 } else {
                     println!("  Usage: xpo dev <port> -n <name>");
