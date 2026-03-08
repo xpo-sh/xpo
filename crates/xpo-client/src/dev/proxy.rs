@@ -123,6 +123,7 @@ async fn handle_connection(acceptor: TlsAcceptor, tcp_stream: TcpStream, upstrea
             && !msg.contains("unexpected eof")
             && !msg.contains("early eof")
             && !msg.contains("close_notify")
+            && !msg.contains("CertificateUnknown")
         {
             eprintln!("  {} {msg}", style("✗").red().dim());
         }
@@ -193,12 +194,27 @@ fn log_request(method: &str, path: &str, status: &str, duration: std::time::Dura
         style(status).dim()
     };
 
+    let ms = format!("{}ms", duration.as_millis());
+    let suffix = format!(" {} {:>6}", status, ms);
+    let term_width = terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .unwrap_or(80);
+    let prefix = format!("  {:<6} ", method);
+    let max_path = term_width.saturating_sub(prefix.len() + suffix.len());
+    let display_path = if path.len() > max_path && max_path > 3 {
+        format!("{}...", &path[..max_path - 3])
+    } else {
+        path.to_string()
+    };
+    let pad = term_width.saturating_sub(prefix.len() + display_path.len() + suffix.len());
     println!(
-        "  {} {} {} {}",
+        "  {:<6} {}{:>pad$}{} {:>6}",
         style(method).bold(),
-        path,
+        display_path,
+        "",
         styled_status,
-        style(format!("{}ms", duration.as_millis())).dim()
+        style(ms).dim(),
+        pad = pad
     );
 }
 

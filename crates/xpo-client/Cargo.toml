@@ -26,3 +26,4 @@ tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-pemfile = "2"
 rustls-pki-types = "1"
+terminal_size = "0.4"
