@@ -1,10 +1,68 @@
 use crate::dev::{ca, hosts};
 use console::style;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
+
+struct LogState {
+    entries: VecDeque<String>,
+    displayed: usize,
+}
+
+impl LogState {
+    fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            displayed: 0,
+        }
+    }
+}
+
+fn print_banner(domain: &str, port: u16) {
+    let d = "\x1b[2m";
+    let b = "\x1b[1m";
+    let c = "\x1b[36;1m";
+    let r = "\x1b[0m";
+
+    let url = format!("https://{domain}");
+    let target = format!("localhost:{port}");
+
+    let line1 = "xpo dev";
+    let line2 = format!("{url} -> {target}");
+    let line3 = "Ctrl+C to stop";
+
+    let inner = line1.len().max(line2.len()).max(line3.len()) + 4;
+    let border = "\u{2500}".repeat(inner);
+    let empty = " ".repeat(inner);
+
+    let pad1 = inner - line1.len() - 2;
+    let pad2 = inner - line2.len() - 2;
+    let pad3 = inner - line3.len() - 2;
+
+    println!();
+    println!("  {d}\u{256d}{border}\u{256e}{r}");
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {b}{line1}{r}{}{d}\u{2502}{r}",
+        " ".repeat(pad1)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {c}{url}{r} -> {target}{}{d}\u{2502}{r}",
+        " ".repeat(pad2)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {d}{line3}{r}{}{d}\u{2502}{r}",
+        " ".repeat(pad3)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!("  {d}\u{2570}{border}\u{256f}{r}");
+    println!();
+}
 
 pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !ca::ca_exists() {
@@ -80,19 +138,9 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
         }
     });
 
-    println!();
-    println!("  {}", style("xpo dev").bold());
-    println!();
-    println!(
-        "  {} {}  →  localhost:{}",
-        style("→").green().bold(),
-        style(format!("https://{domain}")).cyan().bold(),
-        port
-    );
-    println!();
-    println!("  {}", style("Ctrl+C to stop").dim());
-    println!();
+    print_banner(&domain, port);
 
+    let log_state = Arc::new(std::sync::Mutex::new(LogState::new()));
     let domain_clone = domain.clone();
     loop {
         tokio::select! {
@@ -100,7 +148,8 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
                 match result {
                     Ok((stream, _)) => {
                         let acceptor = acceptor.clone();
-                        tokio::spawn(handle_connection(acceptor, stream, port));
+                        let ls = log_state.clone();
+                        tokio::spawn(handle_connection(acceptor, stream, port, ls));
                     }
                     Err(e) => {
                         eprintln!("  {} Accept error: {e}", style("✗").red());
@@ -108,7 +157,6 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                // \r + clear line to hide ^C
                 eprint!("\r\x1b[2K");
                 println!("  {} Cleaning up...", style("→").dim());
                 let _ = hosts::remove(&domain_clone);
@@ -122,8 +170,13 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-async fn handle_connection(acceptor: TlsAcceptor, tcp_stream: TcpStream, upstream_port: u16) {
-    if let Err(e) = proxy_connection(acceptor, tcp_stream, upstream_port).await {
+async fn handle_connection(
+    acceptor: TlsAcceptor,
+    tcp_stream: TcpStream,
+    upstream_port: u16,
+    log_state: Arc<std::sync::Mutex<LogState>>,
+) {
+    if let Err(e) = proxy_connection(acceptor, tcp_stream, upstream_port, &log_state).await {
         let msg = e.to_string();
         if !msg.contains("connection reset")
             && !msg.contains("broken pipe")
@@ -186,7 +239,13 @@ fn error_page(status_code: u16, title: &str, message: &str, hint: &str) -> Strin
     )
 }
 
-fn log_request(method: &str, path: &str, status: &str, duration: std::time::Duration) {
+fn log_request(
+    state: &Arc<std::sync::Mutex<LogState>>,
+    method: &str,
+    path: &str,
+    status: &str,
+    duration: std::time::Duration,
+) {
     let status_code: u16 = status.parse().unwrap_or(0);
 
     let styled_status = if status_code >= 500 {
@@ -214,7 +273,7 @@ fn log_request(method: &str, path: &str, status: &str, duration: std::time::Dura
         path.to_string()
     };
     let pad = term_width.saturating_sub(prefix.len() + display_path.len() + suffix.len());
-    println!(
+    let line = format!(
         "  {:<6} {}{:>pad$}{} {:>6}",
         style(method).bold(),
         display_path,
@@ -223,12 +282,29 @@ fn log_request(method: &str, path: &str, status: &str, duration: std::time::Dura
         style(ms).dim(),
         pad = pad
     );
+
+    let mut state = state.lock().unwrap();
+    state.entries.push_back(line);
+    if state.entries.len() > 10 {
+        state.entries.pop_front();
+    }
+
+    if state.displayed > 0 {
+        print!("\x1b[{}A\x1b[J", state.displayed);
+    }
+    for entry in &state.entries {
+        println!("{entry}");
+    }
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    state.displayed = state.entries.len();
 }
 
 async fn proxy_connection(
     acceptor: TlsAcceptor,
     tcp_stream: TcpStream,
     upstream_port: u16,
+    log_state: &Arc<std::sync::Mutex<LogState>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let start = std::time::Instant::now();
 
@@ -264,7 +340,7 @@ async fn proxy_connection(
             );
             let _ = tls_write.write_all(resp.as_bytes()).await;
             let _ = tls_write.shutdown().await;
-            log_request(&method, &path, "502", start.elapsed());
+            log_request(log_state, &method, &path, "502", start.elapsed());
             return Ok(());
         }
     };
@@ -347,7 +423,7 @@ async fn proxy_connection(
     let duration = start.elapsed();
     let status_str = captured_status.lock().unwrap().clone();
 
-    log_request(&method, &path, &status_str, duration);
+    log_request(log_state, &method, &path, &status_str, duration);
 
     Ok(())
 }
@@ -443,6 +519,10 @@ mod tests {
         assert!(response.contains("Location: https://myapp.test/"));
     }
 
+    fn test_log_state() -> Arc<std::sync::Mutex<LogState>> {
+        Arc::new(std::sync::Mutex::new(LogState::new()))
+    }
+
     fn test_tls_pair() -> (
         TlsAcceptor,
         tokio_rustls::TlsConnector,
@@ -498,12 +578,14 @@ mod tests {
         });
 
         let (acceptor, connector, _) = test_tls_pair();
+        let log_state = test_log_state();
+        let ls = log_state.clone();
         let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = proxy_listener.local_addr().unwrap();
 
         tokio::spawn(async move {
             let (stream, _) = proxy_listener.accept().await.unwrap();
-            let _ = proxy_connection(acceptor, stream, upstream_port).await;
+            let _ = proxy_connection(acceptor, stream, upstream_port, &ls).await;
         });
 
         let tcp = TcpStream::connect(proxy_addr).await.unwrap();
@@ -533,12 +615,14 @@ mod tests {
     #[tokio::test]
     async fn e2e_proxy_502_upstream_down() {
         let (acceptor, connector, _) = test_tls_pair();
+        let log_state = test_log_state();
+        let ls = log_state.clone();
         let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = proxy_listener.local_addr().unwrap();
 
         tokio::spawn(async move {
             let (stream, _) = proxy_listener.accept().await.unwrap();
-            let _ = proxy_connection(acceptor, stream, 19999).await;
+            let _ = proxy_connection(acceptor, stream, 19999, &ls).await;
         });
 
         let tcp = TcpStream::connect(proxy_addr).await.unwrap();
@@ -555,5 +639,23 @@ mod tests {
 
         assert!(resp_str.contains("502 Bad Gateway"));
         assert!(resp_str.contains("Cannot reach"));
+    }
+
+    #[test]
+    fn rolling_log_keeps_max_10() {
+        let state = test_log_state();
+        for i in 0..15 {
+            log_request(
+                &state,
+                "GET",
+                &format!("/page{i}"),
+                "200",
+                std::time::Duration::from_millis(10),
+            );
+        }
+        let s = state.lock().unwrap();
+        assert_eq!(s.entries.len(), 10);
+        assert!(s.entries.back().unwrap().contains("/page14"));
+        assert!(!s.entries.front().unwrap().contains("/page0"));
     }
 }
