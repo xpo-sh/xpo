@@ -10,13 +10,15 @@ use tokio_rustls::TlsAcceptor;
 struct LogState {
     entries: VecDeque<String>,
     displayed: usize,
+    max: usize,
 }
 
 impl LogState {
-    fn new() -> Self {
+    fn new(max: usize) -> Self {
         Self {
             entries: VecDeque::new(),
             displayed: 0,
+            max,
         }
     }
 }
@@ -64,7 +66,7 @@ fn print_banner(domain: &str, port: u16) {
     println!();
 }
 
-pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(port: u16, name: &str, max_logs: usize) -> Result<(), Box<dyn std::error::Error>> {
     if !ca::ca_exists() {
         eprintln!(
             "  {} Run {} first",
@@ -140,7 +142,7 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
 
     print_banner(&domain, port);
 
-    let log_state = Arc::new(std::sync::Mutex::new(LogState::new()));
+    let log_state = Arc::new(std::sync::Mutex::new(LogState::new(max_logs)));
     let domain_clone = domain.clone();
     loop {
         tokio::select! {
@@ -285,7 +287,7 @@ fn log_request(
 
     let mut state = state.lock().unwrap();
     state.entries.push_back(line);
-    if state.entries.len() > 10 {
+    if state.max > 0 && state.entries.len() > state.max {
         state.entries.pop_front();
     }
 
@@ -520,7 +522,7 @@ mod tests {
     }
 
     fn test_log_state() -> Arc<std::sync::Mutex<LogState>> {
-        Arc::new(std::sync::Mutex::new(LogState::new()))
+        Arc::new(std::sync::Mutex::new(LogState::new(10)))
     }
 
     fn test_tls_pair() -> (

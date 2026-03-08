@@ -22,6 +22,8 @@ enum Commands {
         subdomain: Option<String>,
         #[arg(short, long)]
         domain: Option<String>,
+        #[arg(long, default_value = "10")]
+        logs: usize,
     },
     Dev(DevArgs),
     Login,
@@ -38,6 +40,9 @@ struct DevArgs {
 
     #[arg(short, long)]
     name: Option<String>,
+
+    #[arg(long, default_value = "10")]
+    logs: usize,
 }
 
 #[derive(Subcommand)]
@@ -76,7 +81,7 @@ async fn main() {
                         );
                         std::process::exit(1);
                     }
-                    dev::proxy::run(port, &name).await
+                    dev::proxy::run(port, &name, args.logs).await
                 } else {
                     println!("  Usage: xpo dev <port> -n <name>");
                     println!("         xpo dev setup");
@@ -89,9 +94,10 @@ async fn main() {
             port,
             subdomain,
             domain: _,
+            logs,
         } => {
             let server = std::env::var("XPO_SERVER").unwrap_or_else(|_| "localhost:8081".into());
-            tunnel::run(port, subdomain, &server).await
+            tunnel::run(port, subdomain, &server, logs).await
         }
         Commands::Login => {
             println!("  Coming soon. Visit https://xpo.sh");

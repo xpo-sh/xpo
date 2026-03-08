@@ -73,6 +73,7 @@ xpo dev uninstall
 - 🎨 **Error pages** - branded 502/504 pages when upstream is down
 - 🦀 **Fast** - Rust + tokio, sub-millisecond proxy overhead
 - ⚙️ **Zero config** - one `setup`, then just `xpo dev <port> -n <name>`
+- 📜 **Rolling logs** - clean terminal with `--logs N` (default: 10)
 
 ## 🔮 Coming soon
 

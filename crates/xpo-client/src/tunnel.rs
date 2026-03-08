@@ -12,13 +12,15 @@ use xpo_core::{HEARTBEAT_TIMEOUT_SECS, RECONNECT_MAX_SECS, RECONNECT_MIN_SECS};
 struct LogState {
     entries: VecDeque<String>,
     displayed: usize,
+    max: usize,
 }
 
 impl LogState {
-    fn new() -> Self {
+    fn new(max: usize) -> Self {
         Self {
             entries: VecDeque::new(),
             displayed: 0,
+            max,
         }
     }
 }
@@ -27,11 +29,12 @@ pub async fn run(
     port: u16,
     subdomain: Option<String>,
     server: &str,
+    max_logs: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut backoff = RECONNECT_MIN_SECS;
 
     loop {
-        match connect_and_run(port, subdomain.clone(), server).await {
+        match connect_and_run(port, subdomain.clone(), server, max_logs).await {
             Ok(()) => break,
             Err(e) => {
                 let msg = e.to_string();
@@ -63,6 +66,7 @@ async fn connect_and_run(
     port: u16,
     subdomain: Option<String>,
     server: &str,
+    max_logs: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = format!("ws://{server}");
     let (ws_stream, _) = connect_async(&ws_url).await?;
@@ -108,7 +112,7 @@ async fn connect_and_run(
     let ws_relays: Arc<
         dashmap::DashMap<xpo_core::StreamId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     > = Arc::new(dashmap::DashMap::new());
-    let log_state = Arc::new(std::sync::Mutex::new(LogState::new()));
+    let log_state = Arc::new(std::sync::Mutex::new(LogState::new(max_logs)));
 
     loop {
         tokio::select! {
@@ -339,7 +343,7 @@ fn log_request(state: &Arc<std::sync::Mutex<LogState>>, raw_request: &[u8], raw_
 
     let mut state = state.lock().unwrap();
     state.entries.push_back(line);
-    if state.entries.len() > 10 {
+    if state.max > 0 && state.entries.len() > state.max {
         state.entries.pop_front();
     }
 
