@@ -1,0 +1,12 @@
+[package]
+name = "xpo-core"
+description = "Shared protocol, types, and auth for xpo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"

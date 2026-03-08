@@ -1,0 +1,20 @@
+[package]
+name = "xpo"
+description = "Expose local services via secure tunnels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["tunnel", "localhost", "expose", "proxy", "dev"]
+categories = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "xpo"
+path = "src/main.rs"
+
+[dependencies]
+xpo-core = { path = "../xpo-core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
