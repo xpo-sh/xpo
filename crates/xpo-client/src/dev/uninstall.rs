@@ -1,20 +1,6 @@
 use crate::dev::ca;
 use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::process::Command;
-
-fn spinner(msg: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-            .template("  {spinner:.cyan} {msg}")
-            .unwrap(),
-    );
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-    pb.set_message(msg.to_string());
-    pb
-}
 
 fn done(msg: &str) {
     println!("  {} {msg}", style("✓").green().bold());
@@ -36,9 +22,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn step_remove_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
-    let sp = spinner("Removing port forwarding (sudo)...");
+    println!("  {} Removing port forwarding...", style("○").dim());
     remove_port_forwarding_platform()?;
-    sp.finish_and_clear();
     done("Port forwarding removed");
     Ok(())
 }
@@ -49,9 +34,8 @@ fn step_untrust_ca() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let sp = spinner("Removing CA from trust store (sudo)...");
+    println!("  {} Removing CA from trust store...", style("○").dim());
     untrust_ca_platform()?;
-    sp.finish_and_clear();
     done("CA removed from trust store");
     Ok(())
 }
@@ -96,7 +80,7 @@ fn is_ca_trusted() -> bool {
 
 #[cfg(target_os = "macos")]
 fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("sudo")
+    let status = Command::new("sudo")
         .args([
             "security",
             "delete-certificate",
@@ -104,11 +88,10 @@ fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
             "xpo.sh Development CA",
             "/Library/Keychains/System.keychain",
         ])
-        .output()?;
+        .status()?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to untrust CA: {err}").into());
+    if !status.success() {
+        return Err("Failed to untrust CA".into());
     }
     Ok(())
 }
@@ -138,15 +121,14 @@ fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(target_os = "macos")]
 fn remove_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Stdio;
-    let output = Command::new("sudo")
+    let status = Command::new("sudo")
         .args(["pfctl", "-a", "com.apple/xpo", "-F", "all"])
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .stdout(Stdio::null())
-        .output()?;
+        .status()?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to flush pf rules: {err}").into());
+    if !status.success() {
+        return Err("Failed to flush pf rules".into());
     }
     Ok(())
 }

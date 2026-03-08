@@ -66,9 +66,8 @@ fn step_trust_ca() -> Result<(), Box<dyn std::error::Error>> {
     if is_ca_trusted() {
         done("CA trusted in system keychain");
     } else {
-        let sp = spinner("Trusting CA in system keychain (sudo)...");
+        println!("  {} Trusting CA in system keychain...", style("○").dim());
         trust_ca_platform()?;
-        sp.finish_and_clear();
         done("CA trusted in system keychain");
     }
     Ok(())
@@ -78,9 +77,8 @@ fn step_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
     if is_port_forwarding_active() {
         done_dim("Port forwarding active", "443→10443, 80→10080");
     } else {
-        let sp = spinner("Setting up port forwarding (sudo)...");
+        println!("  {} Setting up port forwarding...", style("○").dim());
         setup_port_forwarding_platform()?;
-        sp.finish_and_clear();
         done_dim("Port forwarding active", "443→10443, 80→10080");
     }
     Ok(())
@@ -166,7 +164,7 @@ fn is_port_forwarding_active() -> bool {
 
 #[cfg(target_os = "macos")]
 fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("sudo")
+    let status = Command::new("sudo")
         .args([
             "security",
             "add-trusted-cert",
@@ -177,11 +175,10 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
             "/Library/Keychains/System.keychain",
         ])
         .arg(ca::ca_cert_path())
-        .output()?;
+        .status()?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to trust CA: {err}").into());
+    if !status.success() {
+        return Err("Failed to trust CA".into());
     }
     Ok(())
 }
@@ -222,20 +219,20 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
+    let tmp = std::env::temp_dir().join("xpo-pf-rules");
+    std::fs::write(
+        &tmp,
+        "rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443\nrdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080\n",
+    )?;
 
-    let rules = b"rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443\nrdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080\n";
-
-    let mut child = Command::new("sudo")
-        .args(["pfctl", "-a", "com.apple/xpo", "-f", "-"])
-        .stdin(Stdio::piped())
+    let output = Command::new("sudo")
+        .args(["pfctl", "-a", "com.apple/xpo", "-f"])
+        .arg(&tmp)
         .stderr(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()?;
+        .output()?;
 
-    child.stdin.take().unwrap().write_all(rules)?;
+    let _ = std::fs::remove_file(&tmp);
 
-    let output = child.wait_with_output()?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Failed to load pf rules: {err}").into());

@@ -18,6 +18,25 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
 
     let domain = format!("{name}.test");
 
+    // Cache sudo credentials upfront, keep alive for cleanup
+    println!("  {} sudo required for /etc/hosts", style("○").dim());
+    let status = std::process::Command::new("sudo").arg("-v").status()?;
+    if !status.success() {
+        return Err("sudo authentication failed".into());
+    }
+    // Background task: refresh sudo every 4 minutes
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(240));
+        loop {
+            interval.tick().await;
+            let _ = std::process::Command::new("sudo")
+                .args(["-v", "-n"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    });
+
     let sp = indicatif::ProgressBar::new_spinner();
     sp.set_style(
         indicatif::ProgressStyle::default_spinner()
@@ -41,9 +60,12 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
     let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_pem.as_bytes())?
         .ok_or("No private key found in PEM")?;
 
-    let config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_no_client_auth()
+    .with_single_cert(certs, key)?;
 
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
@@ -79,7 +101,8 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                println!();
+                // \r + clear line to hide ^C
+                eprint!("\r\x1b[2K");
                 println!("  {} Cleaning up...", style("→").dim());
                 let _ = hosts::remove(&domain_clone);
                 println!("  {} Stopped", style("✓").green().bold());
@@ -98,6 +121,7 @@ async fn handle_connection(acceptor: TlsAcceptor, tcp_stream: TcpStream, upstrea
         if !msg.contains("connection reset")
             && !msg.contains("broken pipe")
             && !msg.contains("unexpected eof")
+            && !msg.contains("close_notify")
         {
             eprintln!("  {} {msg}", style("✗").red().dim());
         }
