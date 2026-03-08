@@ -1,5 +1,4 @@
 use crate::dev::ca;
-use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -100,6 +99,7 @@ fn step_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
     let anchor = "\
 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443
 rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080
