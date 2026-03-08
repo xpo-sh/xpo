@@ -1,5 +1,6 @@
 use console::style;
 use futures_util::{SinkExt, StreamExt};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
@@ -7,6 +8,20 @@ use tokio_tungstenite::tungstenite::Message;
 use xpo_core::auth::create_test_token;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_TIMEOUT_SECS, RECONNECT_MAX_SECS, RECONNECT_MIN_SECS};
+
+struct LogState {
+    entries: VecDeque<String>,
+    displayed: usize,
+}
+
+impl LogState {
+    fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            displayed: 0,
+        }
+    }
+}
 
 pub async fn run(
     port: u16,
@@ -93,6 +108,7 @@ async fn connect_and_run(
     let ws_relays: Arc<
         dashmap::DashMap<xpo_core::StreamId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     > = Arc::new(dashmap::DashMap::new());
+    let log_state = Arc::new(std::sync::Mutex::new(LogState::new()));
 
     loop {
         tokio::select! {
@@ -113,8 +129,9 @@ async fn connect_and_run(
                                         let payload = packet.payload;
                                         let tx = resp_tx.clone();
                                         let relays = ws_relays.clone();
+                                        let ls = log_state.clone();
                                         tokio::spawn(async move {
-                                            let result = proxy_to_upstream(upstream_port, &payload, stream_id).await;
+                                            let result = proxy_to_upstream(upstream_port, &payload, stream_id, &ls).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
                                             let _ = tx.send(Message::Binary(resp_pkt.encode()));
                                             if let Some(relay) = result.ws_relay {
@@ -201,6 +218,7 @@ async fn proxy_to_upstream(
     port: u16,
     raw_request: &[u8],
     stream_id: xpo_core::StreamId,
+    log_state: &Arc<std::sync::Mutex<LogState>>,
 ) -> ProxyResult {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -248,7 +266,7 @@ async fn proxy_to_upstream(
                     && response.starts_with(b"HTTP/1.1 101")
                     && response.windows(4).any(|w| w == b"\r\n\r\n")
                 {
-                    log_request(raw_request, &response);
+                    log_request(log_state, raw_request, &response);
                     return ProxyResult {
                         response,
                         ws_relay: Some(WsRelay {
@@ -265,7 +283,7 @@ async fn proxy_to_upstream(
         }
     }
 
-    log_request(raw_request, &response);
+    log_request(log_state, raw_request, &response);
     ProxyResult {
         response,
         ws_relay: None,
@@ -295,7 +313,7 @@ fn inject_connection_close(raw: &[u8]) -> Vec<u8> {
     }
 }
 
-fn log_request(raw_request: &[u8], raw_response: &[u8]) {
+fn log_request(state: &Arc<std::sync::Mutex<LogState>>, raw_request: &[u8], raw_response: &[u8]) {
     let req_str = String::from_utf8_lossy(raw_request);
     let parts: Vec<&str> = req_str.split_whitespace().collect();
     let method = parts.first().copied().unwrap_or("???");
@@ -317,7 +335,23 @@ fn log_request(raw_request: &[u8], raw_response: &[u8]) {
         style(status).dim()
     };
 
-    println!("  {:<6} {} {}", style(method).bold(), path, styled_status);
+    let line = format!("  {:<6} {} {}", style(method).bold(), path, styled_status);
+
+    let mut state = state.lock().unwrap();
+    state.entries.push_back(line);
+    if state.entries.len() > 10 {
+        state.entries.pop_front();
+    }
+
+    if state.displayed > 0 {
+        print!("\x1b[{}A\x1b[J", state.displayed);
+    }
+    for entry in &state.entries {
+        println!("{entry}");
+    }
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    state.displayed = state.entries.len();
 }
 
 fn print_banner(url: &str, port: u16, user: &str) {
