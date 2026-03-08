@@ -1,7 +1,7 @@
 use crate::dev::ca;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 fn spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
@@ -72,6 +72,7 @@ fn step_remove_ca() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn is_ca_trusted() -> bool {
+    use std::process::Stdio;
     Command::new("security")
         .args([
             "find-certificate",
@@ -136,6 +137,7 @@ fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn remove_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Stdio;
     let output = Command::new("sudo")
         .args(["pfctl", "-a", "com.apple/xpo", "-F", "all"])
         .stderr(Stdio::piped())
