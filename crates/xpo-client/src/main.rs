@@ -58,10 +58,7 @@ async fn main() {
     let result = match cli.command {
         Commands::Dev(args) => match args.command {
             Some(DevCommands::Setup) => dev::setup::run(),
-            Some(DevCommands::Stop) => {
-                println!("  Coming soon.");
-                Ok(())
-            }
+            Some(DevCommands::Stop) => dev::stop::run(),
             Some(DevCommands::Doctor) => {
                 println!("  Coming soon.");
                 Ok(())
