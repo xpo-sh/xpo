@@ -18,13 +18,18 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
 
     let domain = format!("{name}.test");
 
-    // Cache sudo credentials upfront, keep alive for cleanup
-    println!("  {} sudo required for /etc/hosts", style("○").dim());
-    let status = std::process::Command::new("sudo").arg("-v").status()?;
-    if !status.success() {
-        return Err("sudo authentication failed".into());
+    let status = std::process::Command::new("sudo")
+        .args(["-v", "-n"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if status.is_err() || !status.unwrap().success() {
+        let status = std::process::Command::new("sudo").arg("-v").status()?;
+        if !status.success() {
+            return Err("sudo authentication failed".into());
+        }
     }
-    // Background task: refresh sudo every 4 minutes
+
     tokio::spawn(async {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(240));
         loop {
@@ -37,22 +42,8 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
         }
     });
 
-    let sp = indicatif::ProgressBar::new_spinner();
-    sp.set_style(
-        indicatif::ProgressStyle::default_spinner()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-            .template("  {spinner:.cyan} {msg}")
-            .unwrap(),
-    );
-    sp.enable_steady_tick(std::time::Duration::from_millis(80));
-
-    sp.set_message(format!("Generating certificate for {domain}..."));
     let (cert_pem, key_pem) = ca::generate_leaf_cert(&domain)?;
-
-    sp.set_message(format!("Adding {domain} to /etc/hosts..."));
     hosts::add(&domain)?;
-
-    sp.set_message("Starting HTTPS proxy...".to_string());
 
     let certs: Vec<CertificateDer<'static>> =
         rustls_pemfile::certs(&mut cert_pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
@@ -70,8 +61,6 @@ pub async fn run(port: u16, name: &str) -> Result<(), Box<dyn std::error::Error>
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let listener = TcpListener::bind("0.0.0.0:10443").await?;
-
-    sp.finish_and_clear();
 
     println!();
     println!("  {}", style("xpo dev").bold());
@@ -246,7 +235,7 @@ async fn proxy_connection(
     let method = parts.first().copied().unwrap_or("???").to_string();
     let path = parts.get(1).copied().unwrap_or("/").to_string();
 
-    let mut upstream = match TcpStream::connect(("127.0.0.1", upstream_port)).await {
+    let mut upstream = match TcpStream::connect(("localhost", upstream_port)).await {
         Ok(s) => s,
         Err(_) => {
             let resp = error_page(

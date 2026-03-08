@@ -77,7 +77,6 @@ fn step_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
     if is_port_forwarding_active() {
         done_dim("Port forwarding active", "443→10443, 80→10080");
     } else {
-        println!("  {} Setting up port forwarding...", style("○").dim());
         setup_port_forwarding_platform()?;
         done_dim("Port forwarding active", "443→10443, 80→10080");
     }
