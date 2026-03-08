@@ -68,14 +68,15 @@ async fn main() {
             }
             Some(DevCommands::Uninstall) => dev::uninstall::run(),
             None => {
-                if let Some(_port) = args.port {
-                    println!("  Coming soon. Run `xpo dev setup` first.");
+                if let Some(port) = args.port {
+                    let name = args.name.unwrap_or_else(|| "localhost".to_string());
+                    dev::proxy::run(port, &name).await
                 } else {
                     println!("  Usage: xpo dev <port> -n <name>");
                     println!("         xpo dev setup");
                     println!("         xpo dev stop");
+                    Ok(())
                 }
-                Ok(())
             }
         },
         Commands::Share {
