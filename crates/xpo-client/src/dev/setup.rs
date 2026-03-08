@@ -81,7 +81,10 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
-    println!("     Manual trust required: add {} to your trust store", ca::ca_cert_path().display());
+    println!(
+        "     Manual trust required: add {} to your trust store",
+        ca::ca_cert_path().display()
+    );
     Ok(())
 }
 
@@ -108,11 +111,7 @@ rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080
         .stdout(Stdio::null())
         .spawn()?;
 
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(anchor.as_bytes())?;
+    child.stdin.take().unwrap().write_all(anchor.as_bytes())?;
 
     let status = child.wait()?;
     if !status.success() {
@@ -130,7 +129,10 @@ rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080
             .unwrap_or(lines.len());
 
         lines.insert(insert_pos, "rdr-anchor \"xpo\"");
-        lines.insert(insert_pos + 1, "load anchor \"xpo\" from \"/etc/pf.anchors/xpo\"");
+        lines.insert(
+            insert_pos + 1,
+            "load anchor \"xpo\" from \"/etc/pf.anchors/xpo\"",
+        );
 
         let new_conf = lines.join("\n") + "\n";
 
@@ -140,11 +142,7 @@ rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080
             .stdout(Stdio::null())
             .spawn()?;
 
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(new_conf.as_bytes())?;
+        child.stdin.take().unwrap().write_all(new_conf.as_bytes())?;
 
         let status = child.wait()?;
         if !status.success() {
@@ -170,13 +168,20 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
         let status = Command::new("sudo")
             .args([
                 "iptables",
-                "-t", "nat",
-                "-C", "OUTPUT",
-                "-o", "lo",
-                "-p", "tcp",
-                "--dport", &from.to_string(),
-                "-j", "REDIRECT",
-                "--to-port", &to.to_string(),
+                "-t",
+                "nat",
+                "-C",
+                "OUTPUT",
+                "-o",
+                "lo",
+                "-p",
+                "tcp",
+                "--dport",
+                &from.to_string(),
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                &to.to_string(),
             ])
             .stderr(Stdio::null())
             .status()?;
@@ -185,13 +190,20 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
             let status = Command::new("sudo")
                 .args([
                     "iptables",
-                    "-t", "nat",
-                    "-A", "OUTPUT",
-                    "-o", "lo",
-                    "-p", "tcp",
-                    "--dport", &from.to_string(),
-                    "-j", "REDIRECT",
-                    "--to-port", &to.to_string(),
+                    "-t",
+                    "nat",
+                    "-A",
+                    "OUTPUT",
+                    "-o",
+                    "lo",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &from.to_string(),
+                    "-j",
+                    "REDIRECT",
+                    "--to-port",
+                    &to.to_string(),
                 ])
                 .status()?;
 
