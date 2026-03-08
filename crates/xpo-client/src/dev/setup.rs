@@ -54,7 +54,12 @@ fn step_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(target_os = "macos")]
 fn is_ca_trusted() -> bool {
     Command::new("security")
-        .args(["find-certificate", "-c", "xpo.sh Development CA", "/Library/Keychains/System.keychain"])
+        .args([
+            "find-certificate",
+            "-c",
+            "xpo.sh Development CA",
+            "/Library/Keychains/System.keychain",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -91,7 +96,23 @@ fn is_port_forwarding_active() -> bool {
 #[cfg(target_os = "linux")]
 fn is_port_forwarding_active() -> bool {
     Command::new("sudo")
-        .args(["iptables", "-t", "nat", "-C", "OUTPUT", "-o", "lo", "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", "10443"])
+        .args([
+            "iptables",
+            "-t",
+            "nat",
+            "-C",
+            "OUTPUT",
+            "-o",
+            "lo",
+            "-p",
+            "tcp",
+            "--dport",
+            "443",
+            "-j",
+            "REDIRECT",
+            "--to-port",
+            "10443",
+        ])
         .stderr(Stdio::null())
         .stdout(Stdio::null())
         .status()
@@ -110,8 +131,13 @@ fn is_port_forwarding_active() -> bool {
 fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("sudo")
         .args([
-            "security", "add-trusted-cert", "-d", "-r", "trustRoot",
-            "-k", "/Library/Keychains/System.keychain",
+            "security",
+            "add-trusted-cert",
+            "-d",
+            "-r",
+            "trustRoot",
+            "-k",
+            "/Library/Keychains/System.keychain",
         ])
         .arg(ca::ca_cert_path())
         .output()?;
@@ -126,7 +152,11 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(target_os = "linux")]
 fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("sudo")
-        .args(["cp", &ca::ca_cert_path().to_string_lossy(), "/usr/local/share/ca-certificates/xpo-ca.crt"])
+        .args([
+            "cp",
+            &ca::ca_cert_path().to_string_lossy(),
+            "/usr/local/share/ca-certificates/xpo-ca.crt",
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -181,8 +211,21 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     for (from, to) in [(443, 10443), (80, 10080)] {
         let check = Command::new("sudo")
             .args([
-                "iptables", "-t", "nat", "-C", "OUTPUT", "-o", "lo", "-p", "tcp", "--dport",
-                &from.to_string(), "-j", "REDIRECT", "--to-port", &to.to_string(),
+                "iptables",
+                "-t",
+                "nat",
+                "-C",
+                "OUTPUT",
+                "-o",
+                "lo",
+                "-p",
+                "tcp",
+                "--dport",
+                &from.to_string(),
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                &to.to_string(),
             ])
             .stderr(Stdio::null())
             .status()?;
@@ -190,8 +233,21 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
         if !check.success() {
             let output = Command::new("sudo")
                 .args([
-                    "iptables", "-t", "nat", "-A", "OUTPUT", "-o", "lo", "-p", "tcp", "--dport",
-                    &from.to_string(), "-j", "REDIRECT", "--to-port", &to.to_string(),
+                    "iptables",
+                    "-t",
+                    "nat",
+                    "-A",
+                    "OUTPUT",
+                    "-o",
+                    "lo",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &from.to_string(),
+                    "-j",
+                    "REDIRECT",
+                    "--to-port",
+                    &to.to_string(),
                 ])
                 .output()?;
 
