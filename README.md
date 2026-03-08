@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://xpo.sh"><img src="assets/banner.png" alt="xpo.sh — Expose local services via secure tunnels" /></a>
+  <a href="https://xpo.sh"><img src="assets/banner.png" alt="xpo.sh - Expose local services via secure tunnels" /></a>
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 
 ## What's available now
 
-`xpo dev` — local HTTPS domains for development. Like `localhost:3000`, but with real HTTPS and a clean `.test` domain.
+`xpo dev` - local HTTPS domains for development. Like `localhost:3000`, but with real HTTPS and a clean `.test` domain.
 
 ```bash
 $ xpo dev setup
@@ -66,17 +66,17 @@ xpo dev uninstall
 
 ## Features
 
-- **Real HTTPS** — trusted certificates, no browser warnings
-- **`.test` domains** — IANA reserved, never conflicts with real domains
-- **WebSocket support** — HMR/hot-reload works out of the box
-- **Request logging** — colored `METHOD /path STATUS ms` in terminal
-- **Error pages** — branded 502/504 pages when upstream is down
-- **Fast** — Rust + tokio, sub-millisecond proxy overhead
-- **Zero config** — one `setup`, then just `xpo dev <port> -n <name>`
+- **Real HTTPS** - trusted certificates, no browser warnings
+- **`.test` domains** - IANA reserved, never conflicts with real domains
+- **WebSocket support** - HMR/hot-reload works out of the box
+- **Request logging** - colored `METHOD /path STATUS ms` in terminal
+- **Error pages** - branded 502/504 pages when upstream is down
+- **Fast** - Rust + tokio, sub-millisecond proxy overhead
+- **Zero config** - one `setup`, then just `xpo dev <port> -n <name>`
 
 ## Coming soon
 
-- `xpo share` — public tunnels (`https://myapp.xpo.sh → localhost:3000`)
+- `xpo share` - public tunnels (`https://myapp.xpo.sh → localhost:3000`)
 - Local dashboard with request inspector
 - Webhook replay
 - And more → [roadmap](https://github.com/xpo-sh/xpo/issues)
@@ -87,7 +87,7 @@ xpo dev uninstall
 |---|---|---|
 | macOS (ARM + Intel) | ✅ | ✅ |
 | Linux (x86_64 + ARM) | ✅ | ✅ |
-| Windows | — | ✅ |
+| Windows | ✗ | ✅ |
 
 ## License
 

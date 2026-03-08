@@ -1,3 +1,3 @@
 fn main() {
-    println!("xpo-server — coming soon. Visit https://xpo.sh");
+    println!("xpo-server - coming soon. Visit https://xpo.sh");
 }
