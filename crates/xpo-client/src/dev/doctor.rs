@@ -1,6 +1,5 @@
 use crate::dev::{ca, setup};
 use console::style;
-use std::process::{Command, Stdio};
 
 fn pass(msg: &str) {
     println!("  {} {msg}", style("✓").green().bold());
@@ -56,6 +55,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn check_port_forwarding(all_pass: &mut bool) {
+    use std::process::{Command, Stdio};
+
     if std::path::Path::new("/etc/pf.anchors/com.xpo").exists() {
         pass("Anchor file");
     } else {

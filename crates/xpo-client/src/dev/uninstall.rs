@@ -164,6 +164,7 @@ fn remove_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn strip_xpo_from_pf_conf(pf_conf: &str) -> String {
     let mut new_lines = Vec::new();
     let mut skip = false;

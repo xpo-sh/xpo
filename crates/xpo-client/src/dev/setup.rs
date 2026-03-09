@@ -1,6 +1,7 @@
 use crate::dev::ca;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -29,6 +30,7 @@ fn done_dim(msg: &str, detail: &str) {
     );
 }
 
+#[cfg(target_os = "macos")]
 pub fn pf_token_path() -> PathBuf {
     xpo_core::config::Config::dir().join("pf_token")
 }
@@ -293,6 +295,7 @@ fn parse_pf_token(stderr: &str) -> Option<u64> {
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn build_pf_conf_with_anchor(pf_conf: &str) -> String {
     let mut lines: Vec<&str> = Vec::new();
     let mut skip = false;
