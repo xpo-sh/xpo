@@ -4,6 +4,7 @@ mod auth;
 mod dev;
 mod error_page;
 mod tunnel;
+mod update;
 
 #[derive(Parser)]
 #[command(
@@ -40,6 +41,8 @@ enum Commands {
     Logout,
     #[command(about = "Show login info")]
     Status,
+    #[command(about = "Update xpo to the latest version")]
+    Update,
 }
 
 #[derive(Args)]
@@ -137,6 +140,7 @@ async fn main() {
             println!("  {} Logged out.", console::style("✓").green().bold());
             Ok(())
         }
+        Commands::Update => update::run().await,
         Commands::Status => {
             let config = xpo_core::config::Config::load().unwrap_or_default();
             if config.is_authenticated() && !config.is_expired() {
