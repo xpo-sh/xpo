@@ -1,3 +1,4 @@
+use crate::config::ServerConfig;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -9,7 +10,7 @@ pub struct ServerState {
     pub tunnels: DashMap<String, Tunnel>,
     pub pending: DashMap<StreamId, PendingRequest>,
     pub streams: DashMap<StreamId, ActiveStream>,
-    pub jwt_secret: String,
+    pub config: Arc<ServerConfig>,
 }
 
 #[allow(dead_code)]
@@ -44,12 +45,12 @@ pub struct ActiveStream {
 }
 
 impl ServerState {
-    pub fn new(jwt_secret: String) -> SharedState {
+    pub fn new(config: Arc<ServerConfig>) -> SharedState {
         Arc::new(Self {
             tunnels: DashMap::new(),
             pending: DashMap::new(),
             streams: DashMap::new(),
-            jwt_secret,
+            config,
         })
     }
 

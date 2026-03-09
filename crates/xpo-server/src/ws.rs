@@ -1,6 +1,6 @@
 use crate::state::{SharedState, Tunnel, TunnelMessage};
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
@@ -8,7 +8,10 @@ use xpo_core::auth::JwtValidator;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_INTERVAL_SECS, HEARTBEAT_TIMEOUT_SECS};
 
-pub async fn handle_websocket(stream: TcpStream, state: SharedState) {
+pub async fn handle_websocket<S>(stream: S, state: SharedState)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -19,7 +22,7 @@ pub async fn handle_websocket(stream: TcpStream, state: SharedState) {
 
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
-    let validator = JwtValidator::new(&state.jwt_secret);
+    let validator = JwtValidator::new(&state.config.jwt_secret);
     let user_id;
 
     let auth_msg =
@@ -102,7 +105,7 @@ pub async fn handle_websocket(stream: TcpStream, state: SharedState) {
         },
     );
 
-    let url = format!("http://{subdomain}.localhost:8080");
+    let url = state.config.tunnel_url(&subdomain);
     let resp = ServerControl::TunnelReady {
         url: url.clone(),
         subdomain: subdomain.clone(),

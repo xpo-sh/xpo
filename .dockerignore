@@ -1,0 +1,6 @@
+target/
+.git/
+assets/
+README.md
+LICENSE
+*.md

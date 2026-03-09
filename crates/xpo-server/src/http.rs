@@ -18,9 +18,12 @@ pub async fn handle_http(
         .unwrap_or("")
         .to_string();
 
-    let subdomain = extract_subdomain(&host);
+    let subdomain = extract_subdomain(&host, &state.config.base_domain);
 
     if subdomain.is_empty() {
+        if req.uri().path() == "/healthz" {
+            return Ok(healthz_response(&state));
+        }
         return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found"));
     }
 
@@ -204,15 +207,39 @@ async fn handle_ws_upgrade(
     Ok(resp)
 }
 
-fn extract_subdomain(host: &str) -> String {
+fn extract_subdomain(host: &str, base_domain: &str) -> String {
     let host = host.split(':').next().unwrap_or(host);
-    if host.ends_with(".localhost") {
-        return host.trim_end_matches(".localhost").to_string();
+    let suffix = format!(".{base_domain}");
+    if host.ends_with(&suffix) {
+        return host.strip_suffix(&suffix).unwrap_or("").to_string();
     }
-    if host.ends_with(".xpo.sh") {
-        return host.trim_end_matches(".xpo.sh").to_string();
+    if host.ends_with(".localhost") {
+        return host.strip_suffix(".localhost").unwrap_or("").to_string();
     }
     String::new()
+}
+
+fn healthz_response(state: &SharedState) -> Response<Full<Bytes>> {
+    let uptime = state.config.started_at.elapsed().as_secs();
+    let active_tunnels = state.tunnels.len();
+    let active_streams = state.streams.len();
+
+    let body = format!(
+        r#"{{"status":"ok","version":"{}","region":"{}","instance":"{}","uptime_secs":{},"active_tunnels":{},"active_streams":{}}}"#,
+        env!("CARGO_PKG_VERSION"),
+        state.config.region,
+        state.config.instance_id,
+        uptime,
+        active_tunnels,
+        active_streams,
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("content-length", body.len())
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
 }
 
 async fn serialize_request(req: &Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
@@ -334,22 +361,35 @@ mod tests {
 
     #[test]
     fn extract_subdomain_localhost() {
-        assert_eq!(extract_subdomain("myapp.localhost:8080"), "myapp");
-        assert_eq!(extract_subdomain("myapp.localhost"), "myapp");
-        assert_eq!(extract_subdomain("test-app.localhost:8080"), "test-app");
+        assert_eq!(extract_subdomain("myapp.localhost:8080", "xpo.sh"), "myapp");
+        assert_eq!(extract_subdomain("myapp.localhost", "xpo.sh"), "myapp");
+        assert_eq!(
+            extract_subdomain("test-app.localhost:8080", "xpo.sh"),
+            "test-app"
+        );
     }
 
     #[test]
     fn extract_subdomain_xpo_sh() {
-        assert_eq!(extract_subdomain("myapp.xpo.sh"), "myapp");
-        assert_eq!(extract_subdomain("myapp.xpo.sh:443"), "myapp");
+        assert_eq!(extract_subdomain("myapp.xpo.sh", "xpo.sh"), "myapp");
+        assert_eq!(extract_subdomain("myapp.xpo.sh:443", "xpo.sh"), "myapp");
+    }
+
+    #[test]
+    fn extract_subdomain_custom_domain() {
+        assert_eq!(extract_subdomain("myapp.tunnel.dev", "tunnel.dev"), "myapp");
+        assert_eq!(
+            extract_subdomain("myapp.tunnel.dev:8080", "tunnel.dev"),
+            "myapp"
+        );
     }
 
     #[test]
     fn extract_subdomain_none() {
-        assert_eq!(extract_subdomain("localhost:8080"), "");
-        assert_eq!(extract_subdomain("example.com"), "");
-        assert_eq!(extract_subdomain(""), "");
+        assert_eq!(extract_subdomain("localhost:8080", "xpo.sh"), "");
+        assert_eq!(extract_subdomain("xpo.sh", "xpo.sh"), "");
+        assert_eq!(extract_subdomain("example.com", "xpo.sh"), "");
+        assert_eq!(extract_subdomain("", "xpo.sh"), "");
     }
 
     #[test]
