@@ -415,12 +415,42 @@ fn print_qr(url: &str) {
     let Ok(qr) = QRBuilder::new(url).build() else {
         return;
     };
-    let qr_str = qr.to_str();
+
+    let qr_lines: Vec<&str> = qr.to_str().leak().lines().collect();
+    if qr_lines.is_empty() {
+        return;
+    }
+
+    let d = "\x1b[2m";
     let c = "\x1b[36m";
     let r = "\x1b[0m";
-    for line in qr_str.lines() {
-        println!("  {c}{line}{r}");
+
+    let qr_width = qr_lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let label = "Scan to open";
+    let inner = qr_width.max(label.len()) + 4;
+    let border = "\u{2500}".repeat(inner);
+
+    let label_pad = inner - label.len() - 2;
+    println!("  {d}\u{256d}{border}\u{256e}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {d}{label}{r}{}{d}\u{2502}{r}",
+        " ".repeat(label_pad)
+    );
+    println!("  {d}\u{2502}{r}{}{d}\u{2502}{r}", " ".repeat(inner));
+    for line in &qr_lines {
+        let line_width = line.chars().count();
+        let pad = inner - line_width - 2;
+        println!(
+            "  {d}\u{2502}{r} {c}{line}{r}{}{d}\u{2502}{r}",
+            " ".repeat(pad + 1)
+        );
     }
+    println!("  {d}\u{2502}{r}{}{d}\u{2502}{r}", " ".repeat(inner));
+    println!("  {d}\u{2570}{border}\u{256f}{r}");
 }
 
 async fn get_token() -> String {
