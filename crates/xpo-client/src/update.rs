@@ -31,14 +31,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let target = detect_target()?;
-    let url = format!(
-        "https://github.com/{REPO}/releases/download/{latest}/xpo-{target}.tar.gz"
-    );
+    let url = format!("https://github.com/{REPO}/releases/download/{latest}/xpo-{target}.tar.gz");
 
     print!("  {} Downloading...", console::style("○").dim());
     std::io::stdout().flush()?;
 
-    let bytes = reqwest::get(&url).await?.error_for_status()?.bytes().await?;
+    let bytes = reqwest::get(&url)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
 
     println!(
         "\r\x1b[2K  {} Downloaded ({:.1} MB)",

@@ -5,19 +5,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let items = vec!["Yes, uninstall xpo", "No, cancel"];
-    let selection =
-        dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt("  Are you sure?")
-            .items(&items)
-            .default(1)
-            .interact()
-            .unwrap_or(1);
+    let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("  Are you sure?")
+        .items(&items)
+        .default(1)
+        .interact()
+        .unwrap_or(1);
 
     if selection != 0 {
-        println!(
-            "  {} Cancelled.",
-            console::style("→").dim()
-        );
+        println!("  {} Cancelled.", console::style("→").dim());
         return Ok(());
     }
 
@@ -82,22 +78,13 @@ fn print_step(msg: &str) {
 }
 
 fn print_done(msg: &str) {
-    println!(
-        "  {} {msg}",
-        console::style("✓").green().bold()
-    );
+    println!("  {} {msg}", console::style("✓").green().bold());
 }
 
 fn print_warn(msg: &str) {
-    println!(
-        "  {} {msg}",
-        console::style("⚠").yellow().bold()
-    );
+    println!("  {} {msg}", console::style("⚠").yellow().bold());
 }
 
 fn print_skip(msg: &str) {
-    println!(
-        "  {} {msg}",
-        console::style("–").dim()
-    );
+    println!("  {} {msg}", console::style("–").dim());
 }
