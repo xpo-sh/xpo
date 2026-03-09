@@ -4,6 +4,7 @@ mod auth;
 mod dev;
 mod error_page;
 mod tunnel;
+mod uninstall;
 mod update;
 
 #[derive(Parser)]
@@ -43,6 +44,8 @@ enum Commands {
     Status,
     #[command(about = "Update xpo to the latest version")]
     Update,
+    #[command(about = "Remove all xpo data from your system")]
+    Uninstall,
 }
 
 #[derive(Args)]
@@ -141,6 +144,7 @@ async fn main() {
             Ok(())
         }
         Commands::Update => update::run().await,
+        Commands::Uninstall => uninstall::run(),
         Commands::Status => {
             let config = xpo_core::config::Config::load().unwrap_or_default();
             if config.is_authenticated() && !config.is_expired() {
