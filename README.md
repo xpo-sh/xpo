@@ -104,7 +104,7 @@ $ xpo dev 3000 -n myapp
 | Local HTTPS | ✅ `.test` domains | ❌ | ❌ |
 | Custom subdomains | ✅ | 💰 Paid | ✅ |
 | Written in | Rust | Go | Go |
-| Download size | ~2 MB | ~11 MB | ~20 MB |
+| Binary size | ~5 MB | ~30 MB | ~40 MB |
 | WebSocket relay | ✅ | ✅ | ✅ |
 
 ## Features
