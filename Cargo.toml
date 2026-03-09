@@ -12,3 +12,8 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/xpo-sh/xpo"
 homepage = "https://xpo.sh"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

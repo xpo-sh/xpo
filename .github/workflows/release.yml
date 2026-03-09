@@ -114,3 +114,31 @@ jobs:
             SHA256SUMS
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           generate_release_notes: true
+
+  deploy:
+    name: Deploy to production
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.repository == 'xpo-sh/xpo'
+    steps:
+      - name: Deploy xpo-server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            VERSION="${GITHUB_REF_NAME:-latest}"
+            ARCH="x86_64-unknown-linux-gnu"
+            URL="https://github.com/xpo-sh/xpo/releases/download/${VERSION}/xpo-server-${ARCH}.tar.gz"
+            TMPDIR=$(mktemp -d)
+            curl -fsSL "$URL" | tar xz -C "$TMPDIR"
+            systemctl stop xpo-server
+            cp "$TMPDIR/xpo-server" /usr/local/bin/xpo-server
+            chmod 755 /usr/local/bin/xpo-server
+            systemctl start xpo-server
+            rm -rf "$TMPDIR"
+            echo "Deployed xpo-server ${VERSION}"
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
