@@ -13,6 +13,7 @@ pub struct Config {
     pub expires_at: Option<u64>,
     pub user_id: Option<String>,
     pub email: Option<String>,
+    pub provider: Option<String>,
     #[serde(default = "default_server")]
     pub default_server: String,
 }
@@ -68,6 +69,7 @@ impl Config {
         self.expires_at = None;
         self.user_id = None;
         self.email = None;
+        self.provider = None;
     }
 
     pub fn path() -> PathBuf {
@@ -111,6 +113,7 @@ default_server: us.xpo.sh
             expires_at: Some(1234567890),
             user_id: Some("uid".into()),
             email: Some("a@b.com".into()),
+            provider: Some("github".into()),
             default_server: "eu.xpo.sh".into(),
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -154,6 +157,7 @@ default_server: us.xpo.sh
             expires_at: Some(123),
             user_id: Some("u".into()),
             email: Some("e".into()),
+            provider: Some("github".into()),
             default_server: "eu.xpo.sh".into(),
         };
         config.clear_tokens();

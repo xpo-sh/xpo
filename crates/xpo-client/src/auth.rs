@@ -158,6 +158,7 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     config.expires_at = Some(now() + expires_in);
     config.user_id = user_id;
     config.email = email.clone();
+    config.provider = Some(provider.to_string());
     config.save()?;
 
     let provider_label = provider[..1].to_uppercase() + &provider[1..];

@@ -133,10 +133,19 @@ async fn main() {
         Commands::Status => {
             let config = xpo_core::config::Config::load().unwrap_or_default();
             if config.is_authenticated() && !config.is_expired() {
+                let provider = config
+                    .provider
+                    .as_deref()
+                    .map(|p| {
+                        let label = p[..1].to_uppercase() + &p[1..];
+                        format!(" ({})", console::style(label).dim())
+                    })
+                    .unwrap_or_default();
                 println!(
-                    "  {} Logged in as {}",
+                    "  {} Logged in as {}{}",
                     console::style("✓").green().bold(),
-                    console::style(config.email.as_deref().unwrap_or("unknown")).cyan()
+                    console::style(config.email.as_deref().unwrap_or("unknown")).cyan(),
+                    provider
                 );
             } else {
                 println!("  Not logged in. Run: xpo login");
