@@ -131,13 +131,15 @@ jobs:
           script: |
             set -e
             ARCH="x86_64-unknown-linux-gnu"
+            BINARY="/usr/local/bin/xpo-server"
             URL="https://github.com/xpo-sh/xpo/releases/download/${VERSION}/xpo-server-${ARCH}.tar.gz"
             TMPDIR=$(mktemp -d)
             curl -fsSL "$URL" | tar xz -C "$TMPDIR"
+            [ -f "$BINARY" ] && cp "$BINARY" "${BINARY}.bak"
             systemctl stop xpo-server
-            cp "$TMPDIR/xpo-server" /usr/local/bin/xpo-server
-            chmod 755 /usr/local/bin/xpo-server
-            systemctl start xpo-server
+            cp "$TMPDIR/xpo-server" "$BINARY"
+            chmod 755 "$BINARY"
+            systemctl start xpo-server || { cp "${BINARY}.bak" "$BINARY" && systemctl start xpo-server && exit 1; }
             rm -rf "$TMPDIR"
             echo "Deployed xpo-server ${VERSION}"
         env:

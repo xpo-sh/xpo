@@ -22,6 +22,9 @@ trap 'rm -rf "$TMPDIR"' EXIT
 echo "Downloading..."
 curl -fsSL "$URL" | tar xz -C "$TMPDIR"
 
+echo "Backing up current binary..."
+[ -f "$BINARY" ] && cp "$BINARY" "${BINARY}.bak"
+
 echo "Stopping xpo-server..."
 systemctl stop xpo-server
 
@@ -30,8 +33,13 @@ cp "$TMPDIR/xpo-server" "$BINARY"
 chmod 755 "$BINARY"
 
 echo "Starting xpo-server..."
-systemctl start xpo-server
+if ! systemctl start xpo-server; then
+    echo "Start failed! Rolling back..."
+    cp "${BINARY}.bak" "$BINARY"
+    systemctl start xpo-server
+    echo "Rolled back to previous version"
+    exit 1
+fi
 
-echo "=== Done ==="
-"$BINARY" --version 2>/dev/null || echo "Deployed successfully"
+echo "=== Deployed ${VERSION} ==="
 systemctl status xpo-server --no-pager -l
