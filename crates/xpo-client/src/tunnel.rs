@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use xpo_core::auth::create_test_token;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_TIMEOUT_SECS, RECONNECT_MAX_SECS, RECONNECT_MIN_SECS};
 
@@ -111,7 +110,6 @@ async fn connect_and_run(
 
     print_banner(&tunnel_url, port, &user);
 
-    let upstream_port = port;
     let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     let ws_relays: Arc<
         dashmap::DashMap<xpo_core::StreamId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
@@ -139,7 +137,7 @@ async fn connect_and_run(
                                         let relays = ws_relays.clone();
                                         let ls = log_state.clone();
                                         tokio::spawn(async move {
-                                            let result = proxy_to_upstream(upstream_port, &payload, stream_id, &ls).await;
+                                            let result = proxy_to_upstream(port, &payload, stream_id, &ls).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
                                             let _ = tx.send(Message::Binary(resp_pkt.encode()));
                                             if let Some(relay) = result.ws_relay {
@@ -299,26 +297,31 @@ async fn proxy_to_upstream(
 }
 
 fn inject_connection_close(raw: &[u8]) -> Vec<u8> {
-    let s = String::from_utf8_lossy(raw);
-    if let Some(pos) = s.find("\r\n") {
-        let mut patched = Vec::with_capacity(raw.len() + 20);
-        patched.extend_from_slice(&raw[..pos + 2]);
-        patched.extend_from_slice(b"Connection: close\r\n");
-        let rest = &raw[pos + 2..];
-        let rest_str = String::from_utf8_lossy(rest);
-        let filtered: String = rest_str
-            .lines()
-            .filter(|l| !l.to_ascii_lowercase().starts_with("connection:"))
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        patched.extend_from_slice(filtered.as_bytes());
-        if !filtered.ends_with("\r\n\r\n") {
+    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n");
+    let (header_bytes, body_bytes) = match header_end {
+        Some(pos) => (&raw[..pos], &raw[pos + 4..]),
+        None => return raw.to_vec(),
+    };
+
+    let header_str = String::from_utf8_lossy(header_bytes);
+    let first_crlf = match header_str.find("\r\n") {
+        Some(pos) => pos,
+        None => return raw.to_vec(),
+    };
+
+    let mut patched = Vec::with_capacity(raw.len() + 20);
+    patched.extend_from_slice(&header_bytes[..first_crlf + 2]);
+    patched.extend_from_slice(b"Connection: close\r\n");
+
+    for line in header_str[first_crlf + 2..].split("\r\n") {
+        if !line.is_empty() && !line.to_ascii_lowercase().starts_with("connection:") {
+            patched.extend_from_slice(line.as_bytes());
             patched.extend_from_slice(b"\r\n");
         }
-        patched
-    } else {
-        raw.to_vec()
     }
+    patched.extend_from_slice(b"\r\n");
+    patched.extend_from_slice(body_bytes);
+    patched
 }
 
 fn log_request(state: &Arc<std::sync::Mutex<LogState>>, raw_request: &[u8], raw_response: &[u8]) {
@@ -409,27 +412,98 @@ fn print_banner(url: &str, port: u16, user: &str) {
 async fn get_token() -> String {
     match crate::auth::get_token().await {
         Ok(token) => token,
-        Err(_) => {
-            let config = xpo_core::config::Config::load().unwrap_or_default();
-            if let Some(token) = config.access_token {
-                return token;
-            }
-            let claims = xpo_core::auth::Claims {
-                sub: "dev-user".into(),
-                aud: "authenticated".into(),
-                exp: (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-                    + 3600),
-                iat: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                email: Some("dev@localhost".into()),
-                role: Some("authenticated".into()),
-            };
-            create_test_token("xpo-dev-secret-for-local-testing", &claims)
+        Err(e) => {
+            eprintln!(
+                "  {} Not logged in: {e}\n  Run: xpo login",
+                console::style("!").red().bold()
+            );
+            std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inject_connection_close_preserves_binary_body() {
+        let body: &[u8] = &[0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F, 0xDE, 0xAD];
+        let mut raw =
+            b"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 8\r\n\r\n".to_vec();
+        raw.extend_from_slice(body);
+
+        let patched = inject_connection_close(&raw);
+
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let actual_body = &patched[header_end + 4..];
+        assert_eq!(actual_body, body, "binary body must be preserved exactly");
+    }
+
+    #[test]
+    fn inject_connection_close_adds_header() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let patched = inject_connection_close(raw);
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let header_str = String::from_utf8_lossy(&patched[..header_end]);
+        assert!(
+            header_str.contains("Connection: close"),
+            "Connection: close header must be present"
+        );
+    }
+
+    #[test]
+    fn inject_connection_close_removes_existing_connection_header() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n";
+        let patched = inject_connection_close(raw);
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let header_str = String::from_utf8_lossy(&patched[..header_end]).to_ascii_lowercase();
+
+        let count = header_str.matches("connection:").count();
+        assert_eq!(count, 1, "exactly one Connection header must remain");
+        assert!(
+            header_str.contains("connection: close"),
+            "the Connection header must be 'close'"
+        );
+    }
+
+    #[test]
+    fn inject_connection_close_preserves_json_body() {
+        let body = br#"{"key":"value"}"#;
+        let mut raw = format!(
+            "POST /data HTTP/1.1\r\nHost: api.test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        ).into_bytes();
+        raw.extend_from_slice(body);
+
+        let patched = inject_connection_close(&raw);
+
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let actual_body = &patched[header_end + 4..];
+        assert_eq!(actual_body, body);
+
+        let header_str = String::from_utf8_lossy(&patched[..header_end]);
+        assert!(header_str.contains("Connection: close"));
+        assert!(header_str.contains("Content-Type: application/json"));
+        assert!(header_str.contains(&format!("Content-Length: {}", body.len())));
+    }
+
+    #[test]
+    fn inject_connection_close_no_crlfcrlf_returns_unchanged() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n";
+        let patched = inject_connection_close(raw);
+        assert_eq!(
+            patched, raw,
+            "input without header terminator must be returned as-is"
+        );
+    }
+
+    #[test]
+    fn inject_connection_close_empty_body() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let patched = inject_connection_close(raw);
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let actual_body = &patched[header_end + 4..];
+        assert!(actual_body.is_empty(), "empty body must stay empty");
     }
 }

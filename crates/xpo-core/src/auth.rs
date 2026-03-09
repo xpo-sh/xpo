@@ -1,5 +1,7 @@
 use crate::error::Result;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+#[cfg(test)]
+use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,7 @@ impl JwtValidator {
     }
 }
 
+#[cfg(test)]
 pub fn create_test_token(secret: &str, claims: &Claims) -> String {
     let key = EncodingKey::from_secret(secret.as_bytes());
     encode(&Header::new(Algorithm::HS256), claims, &key).unwrap()

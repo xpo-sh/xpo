@@ -1,11 +1,19 @@
 use crate::state::{ActiveStream, PendingRequest, SharedState, TunnelMessage};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use xpo_core::StreamId;
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
 
 pub async fn handle_http(
     req: Request<hyper::body::Incoming>,
@@ -32,7 +40,7 @@ pub async fn handle_http(
         None => {
             return Ok(text_response(
                 StatusCode::NOT_FOUND,
-                &format!("<b>{subdomain}</b>.xpo.sh is not connected"),
+                &format!("{subdomain}.{} is not connected", state.config.base_domain),
             ));
         }
     };
@@ -54,20 +62,27 @@ pub async fn handle_http(
         .pending
         .insert(stream_id, PendingRequest { response_tx });
 
-    let raw_request = serialize_request(&req, &host).await;
+    let raw_request = serialize_request(req, &host).await;
 
-    if tunnel_tx
-        .send(TunnelMessage::HttpRequest {
-            stream_id,
-            raw_request,
-        })
-        .is_err()
-    {
-        state.pending.remove(&stream_id);
-        return Ok(text_response(
-            StatusCode::BAD_GATEWAY,
-            "tunnel disconnected",
-        ));
+    match tunnel_tx.try_send(TunnelMessage::HttpRequest {
+        stream_id,
+        raw_request,
+    }) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            state.pending.remove(&stream_id);
+            return Ok(text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tunnel overloaded",
+            ));
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            state.pending.remove(&stream_id);
+            return Ok(text_response(
+                StatusCode::BAD_GATEWAY,
+                "tunnel disconnected",
+            ));
+        }
     }
 
     match tokio::time::timeout(Duration::from_secs(30), response_rx).await {
@@ -93,29 +108,36 @@ async fn handle_ws_upgrade(
     req: Request<hyper::body::Incoming>,
     state: SharedState,
     subdomain: String,
-    tunnel_tx: tokio::sync::mpsc::UnboundedSender<TunnelMessage>,
+    tunnel_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
     host: String,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let stream_id = StreamId::new();
-    let raw_request = serialize_request(&req, &host).await;
+    let raw_request = serialize_request_headers(&req, &host);
 
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     state
         .pending
         .insert(stream_id, PendingRequest { response_tx });
 
-    if tunnel_tx
-        .send(TunnelMessage::HttpRequest {
-            stream_id,
-            raw_request,
-        })
-        .is_err()
-    {
-        state.pending.remove(&stream_id);
-        return Ok(text_response(
-            StatusCode::BAD_GATEWAY,
-            "tunnel disconnected",
-        ));
+    match tunnel_tx.try_send(TunnelMessage::HttpRequest {
+        stream_id,
+        raw_request,
+    }) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            state.pending.remove(&stream_id);
+            return Ok(text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tunnel overloaded",
+            ));
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            state.pending.remove(&stream_id);
+            return Ok(text_response(
+                StatusCode::BAD_GATEWAY,
+                "tunnel disconnected",
+            ));
+        }
     }
 
     let raw_response = match tokio::time::timeout(Duration::from_secs(10), response_rx).await {
@@ -142,7 +164,6 @@ async fn handle_ws_upgrade(
         },
     );
 
-    let tunnel_tx_clone = tunnel_tx;
     let state_clone = state.clone();
 
     tokio::spawn(async move {
@@ -163,10 +184,12 @@ async fn handle_ws_upgrade(
                     match result {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            let _ = tunnel_tx_clone.send(TunnelMessage::StreamData {
+                            if tunnel_tx.try_send(TunnelMessage::StreamData {
                                 stream_id,
                                 data: buf[..n].to_vec(),
-                            });
+                            }).is_err() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -183,7 +206,7 @@ async fn handle_ws_upgrade(
             }
         }
 
-        let _ = tunnel_tx_clone.send(TunnelMessage::StreamEnd { stream_id });
+        let _ = tunnel_tx.try_send(TunnelMessage::StreamEnd { stream_id });
         state_clone.streams.remove(&stream_id);
     });
 
@@ -210,13 +233,17 @@ async fn handle_ws_upgrade(
 fn extract_subdomain(host: &str, base_domain: &str) -> String {
     let host = host.split(':').next().unwrap_or(host);
     let suffix = format!(".{base_domain}");
-    if host.ends_with(&suffix) {
-        return host.strip_suffix(&suffix).unwrap_or("").to_string();
+    let sub = if host.ends_with(&suffix) {
+        host.strip_suffix(&suffix).unwrap_or("").to_string()
+    } else if host.ends_with(".localhost") {
+        host.strip_suffix(".localhost").unwrap_or("").to_string()
+    } else {
+        return String::new();
+    };
+    if sub.contains('.') {
+        return String::new();
     }
-    if host.ends_with(".localhost") {
-        return host.strip_suffix(".localhost").unwrap_or("").to_string();
-    }
-    String::new()
+    sub
 }
 
 fn healthz_response(state: &SharedState) -> Response<Full<Bytes>> {
@@ -242,7 +269,21 @@ fn healthz_response(state: &SharedState) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-async fn serialize_request(req: &Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
+async fn serialize_request(req: Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
+    let mut bytes = serialize_request_headers(&req, host);
+    let body = req
+        .into_body()
+        .collect()
+        .await
+        .map(|c| c.to_bytes())
+        .unwrap_or_default();
+    if !body.is_empty() {
+        bytes.extend_from_slice(&body);
+    }
+    bytes
+}
+
+fn serialize_request_headers(req: &Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
     let method = req.method().as_str();
     let path = req
         .uri()
@@ -255,7 +296,10 @@ async fn serialize_request(req: &Request<hyper::body::Incoming>, host: &str) -> 
             continue;
         }
         if let Ok(v) = value.to_str() {
-            raw.push_str(&format!("{}: {v}\r\n", name));
+            raw.push_str(name.as_str());
+            raw.push_str(": ");
+            raw.push_str(v);
+            raw.push_str("\r\n");
         }
     }
     raw.push_str("\r\n");
@@ -311,6 +355,7 @@ fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
 
 fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     let code = status.as_u16();
+    let safe_body = html_escape(body);
     let html = format!(
         "<!DOCTYPE html>\
         <html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -323,7 +368,6 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         .c{{text-align:center}}\
         .code{{font-size:96px;font-weight:800;line-height:1;color:#1e1e2e}}\
         .msg{{margin:16px 0 0;font-size:15px}}\
-        .msg b{{color:#22d3ee}}\
         .hint{{color:#555570;font-size:13px;margin:8px 0 0}}\
         a{{color:#22d3ee;text-decoration:none}}\
         a:hover{{text-decoration:underline}}\
@@ -332,7 +376,6 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         @media(prefers-color-scheme:light){{\
         body{{background:#f5f6f8;color:#111827}}\
         .code{{color:#e2e4e9}}\
-        .msg b{{color:#0891b2}}\
         .hint{{color:#6b7280}}\
         a{{color:#0891b2}}\
         .brand{{color:#6b7280}}\
@@ -341,7 +384,7 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         </style></head>\
         <body><div class=\"c\">\
         <p class=\"code\">{code}</p>\
-        <p class=\"msg\">{body}</p>\
+        <p class=\"msg\">{safe_body}</p>\
         <p class=\"hint\"><a href=\"https://xpo.sh\">xpo.sh</a></p>\
         </div>\
         <div class=\"brand\"><span>xpo</span>.sh</div>\
@@ -390,6 +433,39 @@ mod tests {
         assert_eq!(extract_subdomain("xpo.sh", "xpo.sh"), "");
         assert_eq!(extract_subdomain("example.com", "xpo.sh"), "");
         assert_eq!(extract_subdomain("", "xpo.sh"), "");
+    }
+
+    #[test]
+    fn extract_subdomain_rejects_multi_level() {
+        assert_eq!(extract_subdomain("a.b.xpo.sh", "xpo.sh"), "");
+        assert_eq!(extract_subdomain("deep.sub.localhost:8080", "xpo.sh"), "");
+    }
+
+    #[test]
+    fn html_escape_special_chars() {
+        assert_eq!(
+            html_escape("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
+        assert_eq!(html_escape("a&b\"c'd"), "a&amp;b&quot;c&#x27;d");
+    }
+
+    #[test]
+    fn text_response_escapes_xss_in_body() {
+        let xss = "<script>alert(1)</script>.xpo.sh is not connected";
+        let escaped = html_escape(xss);
+        assert!(
+            !escaped.contains("<script>"),
+            "escaped output must not contain raw <script>"
+        );
+        assert!(escaped.contains("&lt;script&gt;"));
+        assert!(escaped.contains(".xpo.sh is not connected"));
+    }
+
+    #[test]
+    fn html_escape_noop_on_clean_text() {
+        let clean = "normal-sub.xpo.sh is not connected";
+        assert_eq!(html_escape(clean), clean);
     }
 
     #[test]

@@ -16,10 +16,10 @@ fn now() -> u64 {
         .as_secs()
 }
 
-fn generate_pkce() -> (String, String) {
+fn random_alphanumeric(len: usize) -> String {
     use rand::Rng;
     let mut rng = rand::rng();
-    let verifier: String = (0..64)
+    (0..len)
         .map(|_| {
             let idx = rng.random_range(0..62u8);
             match idx {
@@ -28,12 +28,43 @@ fn generate_pkce() -> (String, String) {
                 _ => (b'A' + idx - 36) as char,
             }
         })
-        .collect();
+        .collect()
+}
 
+fn generate_pkce() -> (String, String) {
+    let verifier = random_alphanumeric(64);
     let hash = Sha256::digest(verifier.as_bytes());
     let challenge = URL_SAFE_NO_PAD.encode(hash);
-
     (verifier, challenge)
+}
+
+fn generate_csrf_state() -> String {
+    random_alphanumeric(32)
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                result.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            result.push(b' ');
+        } else {
+            result.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
 }
 
 fn open_browser(url: &str) {
@@ -56,12 +87,13 @@ fn open_browser(url: &str) {
 pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let auth = auth_url();
     let (code_verifier, code_challenge) = generate_pkce();
+    let csrf_state = generate_csrf_state();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:9876").await?;
 
     let url = format!(
-        "{}/authorize?provider={}&redirect_to=http://127.0.0.1:9876/callback&code_challenge={}&code_challenge_method=S256",
-        auth, provider, code_challenge
+        "{}/authorize?provider={}&redirect_to=http://127.0.0.1:9876/callback&code_challenge={}&code_challenge_method=S256&state={}",
+        auth, provider, code_challenge, csrf_state
     );
 
     println!(
@@ -81,8 +113,15 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let first_line = request.lines().next().unwrap_or("");
     let path = first_line.split_whitespace().nth(1).unwrap_or("");
 
+    let returned_state = extract_query_param(path, "state")
+        .ok_or("no state parameter in callback - possible CSRF")?;
+    if returned_state != csrf_state {
+        return Err("OAuth state mismatch - possible CSRF attack".into());
+    }
+
     let code = extract_query_param(path, "code")
         .ok_or("no auth code received - authentication may have failed")?;
+    let code = percent_decode(&code);
 
     let html = r#"<!DOCTYPE html><html><body style="font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0f;color:#e2e2e8"><div style="text-align:center"><h2 style="color:#22d3ee">xpo</h2><p>Login successful! You can close this tab.</p></div></body></html>"#;
     let response = format!(

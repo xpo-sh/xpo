@@ -1,5 +1,8 @@
 use crate::state::{SharedState, Tunnel, TunnelMessage};
+use dashmap::mapref::entry::Entry;
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashSet;
+use std::sync::LazyLock;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -8,11 +11,40 @@ use xpo_core::auth::JwtValidator;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_INTERVAL_SECS, HEARTBEAT_TIMEOUT_SECS};
 
+const MAX_TUNNELS_PER_USER: usize = 5;
+const TUNNEL_CHANNEL_SIZE: usize = 256;
+const MAX_WS_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+const MAX_WS_FRAME_SIZE: usize = 2 * 1024 * 1024;
+
+static RESERVED_SUBDOMAINS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    include_str!("reserved_subdomains.txt")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect()
+});
+
+fn is_valid_subdomain(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !RESERVED_SUBDOMAINS.contains(s)
+}
+
 pub async fn handle_websocket<S>(stream: S, state: SharedState)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let ws_stream = match tokio_tungstenite::accept_async(stream).await {
+    let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(MAX_WS_MESSAGE_SIZE),
+        max_frame_size: Some(MAX_WS_FRAME_SIZE),
+        ..Default::default()
+    };
+
+    let ws_stream = match tokio_tungstenite::accept_async_with_config(stream, Some(ws_config)).await
+    {
         Ok(ws) => ws,
         Err(e) => {
             warn!("ws upgrade failed: {e}");
@@ -63,6 +95,20 @@ where
         }
     }
 
+    let user_tunnel_count = state
+        .tunnels
+        .iter()
+        .filter(|entry| entry.value().user_id == user_id)
+        .count();
+    if user_tunnel_count >= MAX_TUNNELS_PER_USER {
+        let resp = ServerControl::Error {
+            message: format!("max {MAX_TUNNELS_PER_USER} tunnels per user"),
+        };
+        let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+        warn!(user_id = %user_id, "tunnel limit reached");
+        return;
+    }
+
     let hello_msg =
         match tokio::time::timeout(std::time::Duration::from_secs(5), ws_read.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => text,
@@ -75,12 +121,12 @@ where
     let subdomain = match ClientControl::from_json(&hello_msg) {
         Ok(ClientControl::Hello { subdomain, .. }) => {
             let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
-            if state.tunnels.contains_key(&sub) {
+            if !is_valid_subdomain(&sub) {
                 let resp = ServerControl::Error {
-                    message: "subdomain taken".into(),
+                    message: "invalid subdomain".into(),
                 };
                 let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
-                warn!(subdomain = %sub, "subdomain taken");
+                warn!(subdomain = %sub, "invalid subdomain");
                 return;
             }
             sub
@@ -94,16 +140,25 @@ where
         }
     };
 
-    let (tunnel_tx, mut tunnel_rx) = mpsc::unbounded_channel::<TunnelMessage>();
+    let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelMessage>(TUNNEL_CHANNEL_SIZE);
 
-    state.tunnels.insert(
-        subdomain.clone(),
-        Tunnel {
-            user_id: user_id.clone(),
-            subdomain: subdomain.clone(),
-            tx: tunnel_tx,
-        },
-    );
+    match state.tunnels.entry(subdomain.clone()) {
+        Entry::Occupied(_) => {
+            let resp = ServerControl::Error {
+                message: "subdomain taken".into(),
+            };
+            let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+            warn!(subdomain = %subdomain, "subdomain taken");
+            return;
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(Tunnel {
+                user_id: user_id.clone(),
+                subdomain: subdomain.clone(),
+                tx: tunnel_tx,
+            });
+        }
+    }
 
     let url = state.config.tunnel_url(&subdomain);
     let resp = ServerControl::TunnelReady {
@@ -199,5 +254,73 @@ where
     };
 
     state.tunnels.remove(&subdomain);
+    state
+        .streams
+        .retain(|_, stream| stream.tunnel_subdomain != subdomain);
     info!(subdomain = %subdomain, "tunnel closed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_subdomains() {
+        assert!(is_valid_subdomain("myapp"));
+        assert!(is_valid_subdomain("test-app"));
+        assert!(is_valid_subdomain("a1b2c3"));
+        assert!(is_valid_subdomain("x"));
+    }
+
+    #[test]
+    fn invalid_subdomains() {
+        assert!(!is_valid_subdomain(""));
+        assert!(!is_valid_subdomain("-start"));
+        assert!(!is_valid_subdomain("end-"));
+        assert!(!is_valid_subdomain("UPPER"));
+        assert!(!is_valid_subdomain("has space"));
+        assert!(!is_valid_subdomain("has.dot"));
+        assert!(!is_valid_subdomain(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn reserved_subdomains_blocked() {
+        for name in [
+            "admin",
+            "auth",
+            "api",
+            "www",
+            "dashboard",
+            "login",
+            "mail",
+            "cdn",
+            "static",
+            "git",
+            "deploy",
+            "billing",
+            "status",
+            "grafana",
+            "prometheus",
+            "redis",
+            "ssh",
+            "vpn",
+            "ai",
+            "control-plane",
+            "internal-api",
+            "platform",
+        ] {
+            assert!(!is_valid_subdomain(name), "{name} should be reserved");
+        }
+    }
+
+    #[test]
+    fn reserved_list_loaded() {
+        assert!(
+            RESERVED_SUBDOMAINS.len() > 150,
+            "stoplist should have 150+ entries"
+        );
+        assert!(RESERVED_SUBDOMAINS.contains("admin"));
+        assert!(RESERVED_SUBDOMAINS.contains("ai-models"));
+        assert!(!RESERVED_SUBDOMAINS.contains("myapp"));
+    }
 }

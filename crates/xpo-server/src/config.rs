@@ -35,10 +35,16 @@ impl ServerConfig {
         let acme_enabled = env_str("ACME_ENABLED", "false") == "true";
         let tls_enabled = tls_cert.is_some() || tls_self_signed || acme_enabled;
 
+        let base_domain = env_str("BASE_DOMAIN", "localhost");
+        let jwt_secret = env_str("JWT_SECRET", DEFAULT_JWT_SECRET);
+
+        if base_domain != "localhost" && jwt_secret == DEFAULT_JWT_SECRET {
+            panic!("FATAL: JWT_SECRET must be set in production (BASE_DOMAIN != 'localhost')");
+        }
+
         Self {
             http_port: env_parse("HTTP_PORT", DEFAULT_HTTP_PORT),
             ws_port: env_parse("WS_PORT", DEFAULT_WS_PORT),
-            base_domain: env_str("BASE_DOMAIN", "localhost"),
             scheme: if tls_enabled {
                 env_str("SCHEME", "https")
             } else {
@@ -51,9 +57,10 @@ impl ServerConfig {
                     .or_else(|_| std::env::var("HOST"))
                     .unwrap_or_else(|_| "unknown".to_string()),
             ),
-            jwt_secret: env_str("JWT_SECRET", DEFAULT_JWT_SECRET),
             started_at: Instant::now(),
 
+            base_domain,
+            jwt_secret,
             tls_cert,
             tls_key,
             tls_self_signed,

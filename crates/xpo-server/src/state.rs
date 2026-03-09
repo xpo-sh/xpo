@@ -17,7 +17,7 @@ pub struct ServerState {
 pub struct Tunnel {
     pub user_id: String,
     pub subdomain: String,
-    pub tx: mpsc::UnboundedSender<TunnelMessage>,
+    pub tx: mpsc::Sender<TunnelMessage>,
 }
 
 pub enum TunnelMessage {

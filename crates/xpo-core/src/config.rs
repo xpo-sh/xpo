@@ -34,8 +34,14 @@ impl Config {
         std::fs::create_dir_all(&dir)
             .map_err(|e| XpoError::Config(format!("failed to create {}: {e}", dir.display())))?;
         let contents = serde_yaml::to_string(self)?;
-        std::fs::write(Self::path(), contents)
+        let path = Self::path();
+        std::fs::write(&path, contents)
             .map_err(|e| XpoError::Config(format!("failed to write config: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 

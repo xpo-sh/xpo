@@ -9,9 +9,14 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
+
+const MAX_CONNECTIONS: usize = 1024;
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() {
@@ -77,9 +82,11 @@ async fn main() {
     }
 
     let state = state::ServerState::new(config);
+    let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
     let http_state = state.clone();
     let http_tls = tls_acceptor.clone();
+    let http_sem = semaphore.clone();
     let http_handle = tokio::spawn(async move {
         let listener = TcpListener::bind(format!("0.0.0.0:{http_port}"))
             .await
@@ -93,16 +100,25 @@ async fn main() {
                     continue;
                 }
             };
+            let permit = match http_sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    warn!("connection limit reached, dropping http connection");
+                    continue;
+                }
+            };
             let s = http_state.clone();
             let tls = http_tls.clone();
             tokio::spawn(async move {
                 serve_http(stream, s, tls).await;
+                drop(permit);
             });
         }
     });
 
     let ws_state = state.clone();
     let ws_tls = tls_acceptor;
+    let ws_sem = semaphore;
     let ws_handle = tokio::spawn(async move {
         let listener = TcpListener::bind(format!("0.0.0.0:{ws_port}"))
             .await
@@ -116,16 +132,28 @@ async fn main() {
                     continue;
                 }
             };
+            let permit = match ws_sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    warn!("connection limit reached, dropping ws connection");
+                    continue;
+                }
+            };
             info!(addr = %addr, "tunnel client connecting");
             let s = ws_state.clone();
             let tls = ws_tls.clone();
             tokio::spawn(async move {
                 serve_ws(stream, s, tls).await;
+                drop(permit);
             });
         }
     });
 
-    let _ = tokio::join!(http_handle, ws_handle);
+    tokio::select! {
+        _ = http_handle => error!("http listener exited unexpectedly"),
+        _ = ws_handle => error!("ws listener exited unexpectedly"),
+        _ = tokio::signal::ctrl_c() => info!("shutting down gracefully"),
+    }
 }
 
 fn cert_exists_on_disk(config: &config::ServerConfig) -> bool {
@@ -139,8 +167,8 @@ async fn serve_http(
     tls: Option<TlsAcceptor>,
 ) {
     if let Some(acceptor) = tls {
-        match acceptor.accept(stream).await {
-            Ok(tls_stream) => {
+        match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+            Ok(Ok(tls_stream)) => {
                 let io = TokioIo::new(tls_stream);
                 let svc = service_fn(move |req| {
                     let s = state.clone();
@@ -151,7 +179,8 @@ async fn serve_http(
                     .with_upgrades()
                     .await;
             }
-            Err(e) => warn!("tls handshake: {e}"),
+            Ok(Err(e)) => warn!("tls handshake: {e}"),
+            Err(_) => warn!("tls handshake timeout"),
         }
     } else {
         let io = TokioIo::new(stream);
@@ -172,9 +201,10 @@ async fn serve_ws(
     tls: Option<TlsAcceptor>,
 ) {
     if let Some(acceptor) = tls {
-        match acceptor.accept(stream).await {
-            Ok(tls_stream) => ws::handle_websocket(tls_stream, state).await,
-            Err(e) => warn!("tls handshake: {e}"),
+        match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+            Ok(Ok(tls_stream)) => ws::handle_websocket(tls_stream, state).await,
+            Ok(Err(e)) => warn!("tls handshake: {e}"),
+            Err(_) => warn!("tls handshake timeout"),
         }
     } else {
         ws::handle_websocket(stream, state).await;
