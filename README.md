@@ -99,11 +99,12 @@ $ xpo dev 3000 -n myapp
 
 | | xpo | ngrok | Cloudflare Tunnel |
 |---|---|---|---|
-| Open source | ✅ MIT | ❌ Proprietary | ❌ Proprietary |
+| Open source | ✅ MIT (client + server) | ❌ Proprietary | ⚠️ Client only (Apache 2.0) |
+| Self-hostable | ✅ | ❌ | ❌ |
 | Local HTTPS | ✅ `.test` domains | ❌ | ❌ |
 | Custom subdomains | ✅ | 💰 Paid | ✅ |
 | Written in | Rust | Go | Go |
-| Binary size | ~8 MB | ~25 MB | ~30 MB |
+| Binary size | ~10 MB | ~30 MB | ~40 MB |
 | WebSocket relay | ✅ | ✅ | ✅ |
 
 ## Features
