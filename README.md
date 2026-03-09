@@ -19,12 +19,6 @@
 curl -fsSL https://xpo.sh/install | sh
 ```
 
-Or with cargo:
-
-```bash
-cargo install xpo
-```
-
 ## Public tunnels
 
 Expose any local port to the internet with a single command:
