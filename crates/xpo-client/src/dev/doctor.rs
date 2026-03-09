@@ -6,20 +6,12 @@ fn pass(msg: &str) {
     println!("  {} {msg}", style("✓").green().bold());
 }
 
-fn warn(msg: &str, hint: &str) {
-    println!(
-        "  {} {msg} {} {hint}",
-        style("!").yellow().bold(),
-        style("—").dim()
-    );
+fn warn(msg: &str) {
+    println!("  {} {msg}", style("!").yellow().bold());
 }
 
-fn fail(msg: &str, hint: &str) {
-    println!(
-        "  {} {msg} {} {hint}",
-        style("✗").red().bold(),
-        style("—").dim()
-    );
+fn fail(msg: &str) {
+    println!("  {} {msg}", style("✗").red().bold());
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,14 +24,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if ca::ca_exists() {
         pass("Root CA");
     } else {
-        fail("Root CA", "xpo dev setup");
+        fail("Root CA");
         all_pass = false;
     }
 
     if setup::is_ca_trusted() {
         pass("CA trusted");
     } else {
-        fail("CA not trusted", "xpo dev setup");
+        fail("CA not trusted");
         all_pass = false;
     }
 
@@ -52,9 +44,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {} All checks passed", style("✓").green().bold());
     } else {
         println!(
-            "  {} {} to fix",
+            "  {} Issues found {}",
             style("!").yellow().bold(),
-            style("xpo dev setup").cyan()
+            style("(auto-fixed on next xpo dev)").dim()
         );
     }
     println!();
@@ -67,7 +59,7 @@ fn check_port_forwarding(all_pass: &mut bool) {
     if std::path::Path::new("/etc/pf.anchors/com.xpo").exists() {
         pass("Anchor file");
     } else {
-        fail("Anchor file missing", "xpo dev setup");
+        fail("Anchor file missing");
         *all_pass = false;
     }
 
@@ -77,7 +69,7 @@ fn check_port_forwarding(all_pass: &mut bool) {
     if pf_configured {
         pass("pf.conf");
     } else {
-        fail("pf.conf missing anchor", "xpo dev setup");
+        fail("pf.conf missing anchor");
         *all_pass = false;
     }
 
@@ -97,7 +89,7 @@ fn check_port_forwarding(all_pass: &mut bool) {
     if pf_enabled {
         pass("pf enabled");
     } else {
-        warn("pf not enabled", "sudo pfctl -E");
+        warn("pf not enabled");
         *all_pass = false;
     }
 }
@@ -107,14 +99,14 @@ fn check_port_forwarding(all_pass: &mut bool) {
     if setup::is_port_forwarding_active() {
         pass("iptables forwarding");
     } else {
-        fail("Port forwarding not active", "xpo dev setup");
+        fail("Port forwarding not active");
         *all_pass = false;
     }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn check_port_forwarding(_all_pass: &mut bool) {
-    warn("Port forwarding N/A", "using 10443/10080 directly");
+    warn("Port forwarding N/A");
 }
 
 fn check_port_reachable(all_pass: &mut bool) {
@@ -127,7 +119,7 @@ fn check_port_reachable(all_pass: &mut bool) {
     if reachable {
         pass("Port 443 reachable");
     } else {
-        warn("Port 443 not reachable", "proxy not running");
+        warn("Port 443 not reachable");
         *all_pass = false;
     }
 }
