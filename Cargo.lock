@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "xpo"
-version = "0.1.1"
+version = "0.2.0-alpha"
 dependencies = [
  "base64",
  "clap",
@@ -2821,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "xpo-core"
-version = "0.1.1"
+version = "0.2.0-alpha"
 dependencies = [
  "jsonwebtoken",
  "serde",
@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "xpo-server"
-version = "0.1.1"
+version = "0.2.0-alpha"
 dependencies = [
  "dashmap",
  "futures-util",
