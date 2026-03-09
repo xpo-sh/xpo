@@ -219,32 +219,46 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let xpo_rules = "\n# xpo-start\nrdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443\nrdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080\n# xpo-end\n";
+    let xpo_block = [
+        "# xpo-start",
+        "rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443",
+        "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080",
+        "# xpo-end",
+    ];
 
     let pf_conf = std::fs::read_to_string("/etc/pf.conf").unwrap_or_default();
 
-    let pf_conf = if pf_conf.contains("# xpo-start") {
-        let mut lines = Vec::new();
-        let mut skip = false;
-        for line in pf_conf.lines() {
-            if line.contains("# xpo-start") {
-                skip = true;
-                continue;
-            }
-            if line.contains("# xpo-end") {
-                skip = false;
-                continue;
-            }
-            if !skip {
-                lines.push(line);
-            }
+    let mut lines: Vec<&str> = Vec::new();
+    let mut skip = false;
+    let mut inserted = false;
+    for line in pf_conf.lines() {
+        if line.contains("# xpo-start") {
+            skip = true;
+            continue;
         }
-        lines.join("\n")
-    } else {
-        pf_conf
-    };
+        if line.contains("# xpo-end") {
+            skip = false;
+            continue;
+        }
+        if skip {
+            continue;
+        }
+        lines.push(line);
+        if !inserted && line.contains("rdr-anchor") {
+            for rule in &xpo_block {
+                lines.push(rule);
+            }
+            inserted = true;
+        }
+    }
 
-    let new_conf = format!("{}{}", pf_conf.trim_end(), xpo_rules);
+    if !inserted {
+        for rule in &xpo_block {
+            lines.push(rule);
+        }
+    }
+
+    let new_conf = lines.join("\n") + "\n";
     let tmp = std::env::temp_dir().join("xpo-pf.conf");
     std::fs::write(&tmp, &new_conf)?;
 
