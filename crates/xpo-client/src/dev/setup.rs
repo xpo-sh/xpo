@@ -274,25 +274,17 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let output = Command::new("sudo")
-        .args(["pfctl", "-f", "/etc/pf.conf"])
-        .stderr(Stdio::piped())
-        .output()?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        if !err.contains("ALTQ") {
-            return Err(format!("Failed to reload pf rules: {err}").into());
-        }
-    }
-
-    let output = Command::new("sudo")
-        .args(["pfctl", "-e"])
+        .args(["pfctl", "-ef", "/etc/pf.conf"])
         .stderr(Stdio::piped())
         .output()?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && !stderr.contains("already enabled") {
-        return Err(format!("Failed to enable pf: {stderr}").into());
+    if !output.status.success()
+        && !stderr.contains("ALTQ")
+        && !stderr.contains("already enabled")
+        && !stderr.contains("pf already enabled")
+    {
+        return Err(format!("Failed to reload pf rules: {stderr}").into());
     }
 
     Ok(())
