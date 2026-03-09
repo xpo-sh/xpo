@@ -38,10 +38,6 @@ fn generate_pkce() -> (String, String) {
     (verifier, challenge)
 }
 
-fn generate_csrf_state() -> String {
-    random_alphanumeric(32)
-}
-
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut result = Vec::with_capacity(bytes.len());
@@ -87,13 +83,11 @@ fn open_browser(url: &str) {
 pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let auth = auth_url();
     let (code_verifier, code_challenge) = generate_pkce();
-    let csrf_state = generate_csrf_state();
-
     let listener = tokio::net::TcpListener::bind("127.0.0.1:9876").await?;
 
     let url = format!(
-        "{}/authorize?provider={}&redirect_to=http://127.0.0.1:9876/callback&code_challenge={}&code_challenge_method=S256&state={}",
-        auth, provider, code_challenge, csrf_state
+        "{}/authorize?provider={}&redirect_to=http://127.0.0.1:9876/callback&code_challenge={}&code_challenge_method=S256",
+        auth, provider, code_challenge
     );
 
     println!(
@@ -112,12 +106,6 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let first_line = request.lines().next().unwrap_or("");
     let path = first_line.split_whitespace().nth(1).unwrap_or("");
-
-    let returned_state = extract_query_param(path, "state")
-        .ok_or("no state parameter in callback - possible CSRF")?;
-    if returned_state != csrf_state {
-        return Err("OAuth state mismatch - possible CSRF attack".into());
-    }
 
     let code = extract_query_param(path, "code")
         .ok_or("no auth code received - authentication may have failed")?;
