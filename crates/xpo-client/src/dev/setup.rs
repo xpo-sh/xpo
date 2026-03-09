@@ -113,10 +113,19 @@ fn is_ca_trusted() -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_port_forwarding_active() -> bool {
-    match std::fs::read_to_string("/etc/pf.conf") {
-        Ok(contents) => contents.contains("# xpo-start") && contents.contains("port 10443"),
-        Err(_) => false,
+    let pf_has_rules = std::fs::read_to_string("/etc/pf.conf")
+        .map(|c| c.contains("# xpo-start") && c.contains("port 10443"))
+        .unwrap_or(false);
+    if !pf_has_rules {
+        return false;
     }
+    let nat_active = Command::new("sudo")
+        .args(["pfctl", "-s", "nat"])
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("port 10443"))
+        .unwrap_or(false);
+    nat_active
 }
 
 #[cfg(target_os = "linux")]
@@ -214,9 +223,26 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
 
     let pf_conf = std::fs::read_to_string("/etc/pf.conf").unwrap_or_default();
 
-    if pf_conf.contains("# xpo-start") {
-        return Ok(());
-    }
+    let pf_conf = if pf_conf.contains("# xpo-start") {
+        let mut lines = Vec::new();
+        let mut skip = false;
+        for line in pf_conf.lines() {
+            if line.contains("# xpo-start") {
+                skip = true;
+                continue;
+            }
+            if line.contains("# xpo-end") {
+                skip = false;
+                continue;
+            }
+            if !skip {
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
+    } else {
+        pf_conf
+    };
 
     let new_conf = format!("{}{}", pf_conf.trim_end(), xpo_rules);
     let tmp = std::env::temp_dir().join("xpo-pf.conf");
