@@ -416,10 +416,10 @@ fn print_qr(url: &str) {
         return;
     };
     let qr_str = qr.to_str();
-    let d = "\x1b[2m";
+    let c = "\x1b[36m";
     let r = "\x1b[0m";
     for line in qr_str.lines() {
-        println!("  {d}{line}{r}");
+        println!("  {c}{line}{r}");
     }
 }
 
