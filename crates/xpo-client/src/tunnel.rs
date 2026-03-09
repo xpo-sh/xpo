@@ -68,11 +68,15 @@ async fn connect_and_run(
     server: &str,
     max_logs: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ws_url = format!("ws://{server}");
+    let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
+        format!("ws://{server}")
+    } else {
+        format!("wss://{server}")
+    };
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
-    let token = get_token();
+    let token = get_token().await;
     let auth = ClientControl::Auth { token };
     ws_write.send(Message::Text(auth.to_json()?)).await?;
 
@@ -402,25 +406,30 @@ fn print_banner(url: &str, port: u16, user: &str) {
     println!();
 }
 
-fn get_token() -> String {
-    let config = xpo_core::config::Config::load().unwrap_or_default();
-    if let Some(token) = config.access_token {
-        return token;
+async fn get_token() -> String {
+    match crate::auth::get_token().await {
+        Ok(token) => token,
+        Err(_) => {
+            let config = xpo_core::config::Config::load().unwrap_or_default();
+            if let Some(token) = config.access_token {
+                return token;
+            }
+            let claims = xpo_core::auth::Claims {
+                sub: "dev-user".into(),
+                aud: "authenticated".into(),
+                exp: (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 3600),
+                iat: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                email: Some("dev@localhost".into()),
+                role: Some("authenticated".into()),
+            };
+            create_test_token("xpo-dev-secret-for-local-testing", &claims)
+        }
     }
-    let claims = xpo_core::auth::Claims {
-        sub: "dev-user".into(),
-        aud: "authenticated".into(),
-        exp: (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600),
-        iat: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        email: Some("dev@localhost".into()),
-        role: Some("authenticated".into()),
-    };
-    create_test_token("xpo-dev-secret-for-local-testing", &claims)
 }

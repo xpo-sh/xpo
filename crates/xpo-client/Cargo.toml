@@ -29,3 +29,8 @@ rustls-pki-types = "1"
 terminal_size = "0.4"
 futures-util = "0.3"
 dashmap = "6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+sha2 = "0.10"
+base64 = "0.22"
+serde_json = "1"
+rand = "0.9"

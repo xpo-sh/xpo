@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
+mod auth;
 mod dev;
 mod tunnel;
 
@@ -26,7 +27,11 @@ enum Commands {
         logs: usize,
     },
     Dev(DevArgs),
-    Login,
+    Login {
+        #[arg(long, default_value = "github")]
+        provider: String,
+    },
+    Logout,
     Status,
 }
 
@@ -59,6 +64,10 @@ enum DevCommands {
 
 #[tokio::main]
 async fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install crypto provider");
+
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -96,16 +105,29 @@ async fn main() {
             domain: _,
             logs,
         } => {
-            let server = std::env::var("XPO_SERVER").unwrap_or_else(|_| "localhost:8081".into());
+            let server =
+                std::env::var("XPO_SERVER").unwrap_or_else(|_| "ws.xpo.sh:8081".to_string());
             tunnel::run(port, subdomain, &server, logs).await
         }
-        Commands::Login => {
-            println!("  Coming soon. Visit https://xpo.sh");
+        Commands::Login { provider } => auth::login(&provider).await,
+        Commands::Logout => {
+            let mut config = xpo_core::config::Config::load().unwrap_or_default();
+            config.clear_tokens();
+            let _ = config.save();
+            println!("  {} Logged out.", console::style("✓").green().bold());
             Ok(())
         }
         Commands::Status => {
-            println!("  No active tunnels.");
-            println!("  Coming soon. Visit https://xpo.sh");
+            let config = xpo_core::config::Config::load().unwrap_or_default();
+            if config.is_authenticated() && !config.is_expired() {
+                println!(
+                    "  {} Logged in as {}",
+                    console::style("✓").green().bold(),
+                    console::style(config.email.as_deref().unwrap_or("unknown")).cyan()
+                );
+            } else {
+                println!("  Not logged in. Run: xpo login");
+            }
             Ok(())
         }
     };
