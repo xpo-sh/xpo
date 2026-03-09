@@ -38,6 +38,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify version matches tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"
+          if [ "$TAG" != "$CARGO" ]; then
+            echo "::error::Tag v${TAG} does not match Cargo.toml version ${CARGO}"
+            echo "Run: sed -i 's/version = \".*\"/version = \"${TAG}\"/' Cargo.toml"
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
