@@ -112,7 +112,7 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("no auth code received - authentication may have failed")?;
     let code = percent_decode(&code);
 
-    let html = r#"<!DOCTYPE html><html><head><meta http-equiv="refresh" content="1;url=https://xpo.sh"></head><body style="font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0f;color:#e2e2e8"><div style="text-align:center"><h2 style="color:#22d3ee">xpo</h2><p>Login successful! Redirecting...</p></div></body></html>"#;
+    let html = r#"<!DOCTYPE html><html><head><script>window.close()</script><meta http-equiv="refresh" content="1;url=https://xpo.sh"></head><body style="font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0f;color:#e2e2e8"><div style="text-align:center"><h2 style="color:#22d3ee">xpo</h2><p>Login successful! You can close this tab.</p></div></body></html>"#;
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         html.len(),
