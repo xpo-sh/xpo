@@ -26,7 +26,6 @@
 - [Commands](#commands)
 - [Platform Support](#platform-support)
 - [Contributing](#contributing)
-- [Roadmap](#roadmap)
 - [License](#license)
 
 ## Install
@@ -149,14 +148,6 @@ We welcome contributions! Here's how you can help:
 - 🐛 [Report bugs](https://github.com/xpo-sh/xpo/issues/new?template=bug_report.md)
 - 💡 [Request features](https://github.com/xpo-sh/xpo/issues/new?template=feature_request.md)
 - 🔧 [Submit a PR](https://github.com/xpo-sh/xpo/pulls)
-
-## Roadmap
-
-- Local dashboard with request inspector
-- Webhook replay
-- QR code for mobile testing
-- Connection pooling
-- Project config (xpo.yaml)
 
 ## License
 
