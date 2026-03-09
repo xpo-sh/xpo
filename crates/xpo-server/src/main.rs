@@ -15,6 +15,10 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install crypto provider");
+
     let config = config::ServerConfig::from_env();
 
     tracing_subscriber::fmt()
