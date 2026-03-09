@@ -80,16 +80,16 @@ $ xpo share 3000 -s myapp
 
 ## Local HTTPS
 
-Real HTTPS on localhost with `.test` domains. No browser warnings, WebSocket/HMR works out of the box:
+Real HTTPS on localhost with `.test` domains. No browser warnings, WebSocket/HMR works out of the box. Setup runs automatically on first use:
 
 ```bash
-$ xpo dev setup
+$ xpo dev 3000 -n myapp
+  → Running first-time setup...
   ✓ Root CA created (P-256 ECDSA, 10yr)
   ✓ CA trusted in system keychain
-  ✓ Port forwarding active  443->10443, 80->10080
+  ✓ Port forwarding active  443→10443, 80→10080
 
-$ xpo dev 3000 -n myapp
-  -> https://myapp.test  ->  localhost:3000
+  https://myapp.test -> localhost:3000
 
   GET / 200 12ms
   GET /_nuxt/ 101 42ms
@@ -124,9 +124,11 @@ $ xpo dev 3000 -n myapp
 xpo login                   # authenticate with GitHub or Google
 xpo share <port>            # public HTTPS tunnel
 xpo share <port> -s <name>  # custom subdomain
-xpo dev setup               # one-time local HTTPS setup
-xpo dev <port> -n <name>    # local HTTPS proxy
-xpo dev stop                # clean up
+xpo dev <port> -n <name>    # local HTTPS proxy (auto-setup on first use)
+xpo dev setup               # manual setup (CA, trust, port forwarding)
+xpo dev doctor              # diagnose setup issues
+xpo dev stop                # clean up /etc/hosts entries
+xpo dev uninstall           # remove CA, trust, and port forwarding
 xpo status                  # show session info
 xpo logout                  # clear session
 ```
