@@ -237,9 +237,7 @@ async fn proxy_to_upstream(
         Ok(s) => s,
         Err(_) => {
             return ProxyResult {
-                response:
-                    b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 18\r\n\r\nupstream is down\r\n"
-                        .to_vec(),
+                response: crate::error_page::error_response(502, "upstream is down", ".sh"),
                 ws_relay: None,
             };
         }
@@ -253,8 +251,7 @@ async fn proxy_to_upstream(
 
     if upstream.write_all(&request_bytes).await.is_err() {
         return ProxyResult {
-            response: b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 18\r\n\r\nupstream is down\r\n"
-                .to_vec(),
+            response: crate::error_page::error_response(502, "upstream is down", ".sh"),
             ws_relay: None,
         };
     }

@@ -2,6 +2,7 @@ use clap::{Args, Parser, Subcommand};
 
 mod auth;
 mod dev;
+mod error_page;
 mod tunnel;
 
 #[derive(Parser)]
