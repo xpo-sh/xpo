@@ -5,19 +5,51 @@
 <p align="center">
   <a href="https://xpo.sh"><img src="https://img.shields.io/badge/website-xpo.sh-22d3ee?style=flat-square" alt="Website" /></a>
   <a href="https://crates.io/crates/xpo"><img src="https://img.shields.io/crates/v/xpo?style=flat-square&color=a78bfa" alt="Crates.io" /></a>
+  <a href="https://www.npmjs.com/package/@xposh/cli"><img src="https://img.shields.io/npm/v/@xposh/cli?style=flat-square&color=f97316" alt="npm" /></a>
+  <a href="https://github.com/xpo-sh/xpo/actions"><img src="https://img.shields.io/github/actions/workflow/status/xpo-sh/xpo/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
   <a href="https://github.com/xpo-sh/xpo/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-4ade80?style=flat-square" alt="License" /></a>
-  <a href="https://github.com/xpo-sh/xpo"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-facc15?style=flat-square" alt="Platform" /></a>
+  <a href="https://github.com/xpo-sh/xpo"><img src="https://img.shields.io/github/stars/xpo-sh/xpo?style=flat-square&color=facc15" alt="GitHub Stars" /></a>
+</p>
+
+<p align="center">
+  Open-source tunneling tool that exposes local services to the internet via secure HTTPS tunnels.<br>
+  Built in Rust for maximum performance. Alternative to ngrok and Cloudflare Tunnel.
 </p>
 
 ---
 
-**xpo** is an open-source tunneling tool that exposes local services to the internet via secure HTTPS tunnels. Built in Rust for maximum performance.
+- [Install](#install)
+- [Public Tunnels](#public-tunnels)
+- [Local HTTPS](#local-https)
+- [Why xpo?](#why-xpo)
+- [Features](#features)
+- [Commands](#commands)
+- [Platform Support](#platform-support)
+- [Contributing](#contributing)
+- [Roadmap](#roadmap)
+- [License](#license)
 
 ## Install
 
 ```bash
 curl -fsSL https://xpo.sh/install | sh
 ```
+
+<details>
+<summary>Other methods</summary>
+
+```bash
+# Homebrew
+brew install xpo-sh/tap/xpo
+
+# npm
+npm install -g @xposh/cli
+
+# From source
+cargo install xpo
+```
+
+</details>
 
 ## Public tunnels
 
@@ -63,17 +95,30 @@ $ xpo dev 3000 -n myapp
   GET /_nuxt/ 101 42ms
 ```
 
+## Why xpo?
+
+| | xpo | ngrok | Cloudflare Tunnel |
+|---|---|---|---|
+| Open source | ✅ MIT | ❌ Proprietary | ❌ Proprietary |
+| Self-hostable | ✅ | ❌ | ❌ |
+| Local HTTPS | ✅ `.test` domains | ❌ | ❌ |
+| Custom subdomains | ✅ Free | 💰 Paid | ✅ Free |
+| Written in | Rust | Go | Go |
+| Binary size | ~5 MB | ~25 MB | ~30 MB |
+| WebSocket relay | ✅ | ✅ | ✅ |
+| Auth required | ✅ OAuth | ✅ Account | ✅ Account |
+
 ## Features
 
-- **HTTPS tunnels** - Let's Encrypt wildcard TLS, zero config
-- **WebSocket relay** - HMR/hot-reload works through tunnel
-- **Local HTTPS** - trusted `.test` domains for development
-- **Auto-reconnect** - exponential backoff on connection loss
-- **Request logging** - colored terminal output with timing
-- **Custom subdomains** - `xpo share 3000 -s myapp`
-- **GitHub/Google auth** - OAuth login, no email/password
-- **Fast** - Rust + tokio, sub-millisecond proxy overhead
-- **Open source** - MIT licensed
+- **HTTPS tunnels** -Let's Encrypt wildcard TLS, zero config
+- **WebSocket relay** -HMR/hot-reload works through tunnel
+- **Local HTTPS** -trusted `.test` domains for development
+- **Auto-reconnect** -exponential backoff on connection loss
+- **Request logging** -colored terminal output with timing
+- **Custom subdomains** -`xpo share 3000 -s myapp`
+- **GitHub/Google auth** -OAuth login, no email/password
+- **Fast** -Rust + tokio, sub-millisecond proxy overhead
+- **Open source** -MIT licensed, self-hostable
 
 ## Commands
 
@@ -92,11 +137,26 @@ xpo logout                  # clear session
 
 | Platform | `xpo dev` | `xpo share` |
 |---|---|---|
-| macOS (ARM + Intel) | Full | Full |
-| Linux (x86_64 + ARM) | Full | Full |
-| Windows | Not supported | Full |
+| macOS (ARM + Intel) | ✅ Full | ✅ Full |
+| Linux (x86_64 + ARM) | ✅ Full | ✅ Full |
+| Windows | -| ✅ Full |
 
-## Coming soon
+## Contributing
+
+We welcome contributions! Here's how you can help:
+
+- 🐛 [Report bugs](https://github.com/xpo-sh/xpo/issues/new?template=bug_report.md)
+- 💡 [Request features](https://github.com/xpo-sh/xpo/issues/new?template=feature_request.md)
+- 🔧 [Submit a PR](https://github.com/xpo-sh/xpo/pulls)
+
+```bash
+git clone https://github.com/xpo-sh/xpo.git
+cd xpo
+cargo build --workspace
+cargo test --workspace
+```
+
+## Roadmap
 
 - Local dashboard with request inspector
 - Webhook replay
@@ -104,10 +164,14 @@ xpo logout                  # clear session
 - Connection pooling
 - Project config (xpo.yaml)
 
+See [ROADMAP.md](docs/ROADMAP.md) for the full plan.
+
 ## License
 
 [MIT](LICENSE)
 
 <p align="center">
-  <a href="https://xpo.sh">xpo.sh</a> · <a href="https://x.com/getxposh">X/Twitter</a> · <a href="https://github.com/xpo-sh">GitHub</a>
+  <sub>
+    <a href="https://xpo.sh">Website</a> · <a href="https://x.com/getxposh">X/Twitter</a> · <a href="https://github.com/xpo-sh">GitHub</a>
+  </sub>
 </p>
