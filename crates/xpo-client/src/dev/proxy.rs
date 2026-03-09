@@ -67,15 +67,6 @@ fn print_banner(domain: &str, port: u16) {
 }
 
 pub async fn run(port: u16, name: &str, max_logs: usize) -> Result<(), Box<dyn std::error::Error>> {
-    if !ca::ca_exists() {
-        eprintln!(
-            "  {} Run {} first",
-            style("✗").red().bold(),
-            style("xpo dev setup").cyan()
-        );
-        std::process::exit(1);
-    }
-
     let domain = format!("{name}.test");
 
     let status = std::process::Command::new("sudo")

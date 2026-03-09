@@ -75,10 +75,7 @@ async fn main() {
         Commands::Dev(args) => match args.command {
             Some(DevCommands::Setup) => dev::setup::run(),
             Some(DevCommands::Stop) => dev::stop::run(),
-            Some(DevCommands::Doctor) => {
-                println!("  Coming soon.");
-                Ok(())
-            }
+            Some(DevCommands::Doctor) => dev::doctor::run(),
             Some(DevCommands::Uninstall) => dev::uninstall::run(),
             None => {
                 if let Some(port) = args.port {
@@ -91,7 +88,10 @@ async fn main() {
                         );
                         std::process::exit(1);
                     }
-                    dev::proxy::run(port, &name, args.logs).await
+                    match ensure_dev_setup() {
+                        Ok(()) => dev::proxy::run(port, &name, args.logs).await,
+                        Err(e) => Err(e),
+                    }
                 } else {
                     println!("  Usage: xpo dev <port> -n <name>");
                     println!("         xpo dev setup");
@@ -159,6 +159,20 @@ async fn main() {
         eprintln!("  Error: {e}");
         std::process::exit(1);
     }
+}
+
+fn ensure_dev_setup() -> Result<(), Box<dyn std::error::Error>> {
+    if dev::ca::ca_exists()
+        && dev::setup::is_ca_trusted()
+        && dev::setup::is_port_forwarding_active()
+    {
+        return Ok(());
+    }
+    println!(
+        "  {} Running first-time setup...",
+        console::style("→").dim()
+    );
+    dev::setup::run()
 }
 
 fn is_valid_name(name: &str) -> bool {

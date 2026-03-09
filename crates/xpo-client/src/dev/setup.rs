@@ -1,6 +1,7 @@
 use crate::dev::ca;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 fn spinner(msg: &str) -> ProgressBar {
@@ -26,6 +27,10 @@ fn done_dim(msg: &str, detail: &str) {
         style("✓").green().bold(),
         style(detail).dim()
     );
+}
+
+pub fn pf_token_path() -> PathBuf {
+    xpo_core::config::Config::dir().join("pf_token")
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -86,7 +91,7 @@ fn step_port_forwarding() -> Result<(), Box<dyn std::error::Error>> {
 // --- Check functions (no sudo needed) ---
 
 #[cfg(target_os = "macos")]
-fn is_ca_trusted() -> bool {
+pub(crate) fn is_ca_trusted() -> bool {
     Command::new("security")
         .args([
             "find-certificate",
@@ -102,34 +107,26 @@ fn is_ca_trusted() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn is_ca_trusted() -> bool {
+pub(crate) fn is_ca_trusted() -> bool {
     std::path::Path::new("/usr/local/share/ca-certificates/xpo-ca.crt").exists()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn is_ca_trusted() -> bool {
+pub(crate) fn is_ca_trusted() -> bool {
     false
 }
 
 #[cfg(target_os = "macos")]
-fn is_port_forwarding_active() -> bool {
-    let pf_has_rules = std::fs::read_to_string("/etc/pf.conf")
-        .map(|c| c.contains("# xpo-start") && c.contains("port 10443"))
+pub(crate) fn is_port_forwarding_active() -> bool {
+    let anchor_exists = std::path::Path::new("/etc/pf.anchors/com.xpo").exists();
+    let pf_configured = std::fs::read_to_string("/etc/pf.conf")
+        .map(|c| c.contains("rdr-anchor \"com.xpo\""))
         .unwrap_or(false);
-    if !pf_has_rules {
-        return false;
-    }
-    let nat_active = Command::new("sudo")
-        .args(["pfctl", "-s", "nat"])
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("port 10443"))
-        .unwrap_or(false);
-    nat_active
+    anchor_exists && pf_configured
 }
 
 #[cfg(target_os = "linux")]
-fn is_port_forwarding_active() -> bool {
+pub(crate) fn is_port_forwarding_active() -> bool {
     Command::new("sudo")
         .args([
             "iptables",
@@ -156,7 +153,7 @@ fn is_port_forwarding_active() -> bool {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn is_port_forwarding_active() -> bool {
+pub(crate) fn is_port_forwarding_active() -> bool {
     false
 }
 
@@ -219,46 +216,26 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let xpo_block = [
-        "# xpo-start",
-        "rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443",
-        "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080",
-        "# xpo-end",
-    ];
+    let anchor_content = "\
+rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443\n\
+rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080\n";
+
+    let anchor_path = "/etc/pf.anchors/com.xpo";
+    let tmp_anchor = std::env::temp_dir().join("xpo-anchor");
+    std::fs::write(&tmp_anchor, anchor_content)?;
+
+    let output = Command::new("sudo")
+        .args(["cp", &tmp_anchor.to_string_lossy(), anchor_path])
+        .stderr(Stdio::piped())
+        .output()?;
+    let _ = std::fs::remove_file(&tmp_anchor);
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to write anchor file: {err}").into());
+    }
 
     let pf_conf = std::fs::read_to_string("/etc/pf.conf").unwrap_or_default();
-
-    let mut lines: Vec<&str> = Vec::new();
-    let mut skip = false;
-    let mut inserted = false;
-    for line in pf_conf.lines() {
-        if line.contains("# xpo-start") {
-            skip = true;
-            continue;
-        }
-        if line.contains("# xpo-end") {
-            skip = false;
-            continue;
-        }
-        if skip {
-            continue;
-        }
-        lines.push(line);
-        if !inserted && line.contains("rdr-anchor") {
-            for rule in &xpo_block {
-                lines.push(rule);
-            }
-            inserted = true;
-        }
-    }
-
-    if !inserted {
-        for rule in &xpo_block {
-            lines.push(rule);
-        }
-    }
-
-    let new_conf = lines.join("\n") + "\n";
+    let new_conf = build_pf_conf_with_anchor(&pf_conf);
     let tmp = std::env::temp_dir().join("xpo-pf.conf");
     std::fs::write(&tmp, &new_conf)?;
 
@@ -274,7 +251,23 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let output = Command::new("sudo")
-        .args(["pfctl", "-ef", "/etc/pf.conf"])
+        .args(["pfctl", "-E"])
+        .stderr(Stdio::piped())
+        .output()?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(token) = parse_pf_token(&stderr) {
+        let token_path = pf_token_path();
+        std::fs::write(&token_path, token.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+
+    let output = Command::new("sudo")
+        .args(["pfctl", "-f", "/etc/pf.conf"])
         .stderr(Stdio::piped())
         .output()?;
 
@@ -288,6 +281,60 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn parse_pf_token(stderr: &str) -> Option<u64> {
+    for line in stderr.lines() {
+        if let Some(rest) = line.strip_prefix("Token : ") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn build_pf_conf_with_anchor(pf_conf: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut skip = false;
+    let mut inserted_rdr = pf_conf.contains("rdr-anchor \"com.xpo\"");
+    let mut inserted_load = pf_conf.contains("load anchor \"com.xpo\"");
+    let mut last_rdr_anchor_idx: Option<usize> = None;
+
+    for line in pf_conf.lines() {
+        if line.contains("# xpo-start") {
+            skip = true;
+            continue;
+        }
+        if line.contains("# xpo-end") {
+            skip = false;
+            continue;
+        }
+        if skip {
+            continue;
+        }
+        lines.push(line);
+        if line.starts_with("rdr-anchor") {
+            last_rdr_anchor_idx = Some(lines.len() - 1);
+        }
+    }
+
+    if !inserted_rdr {
+        let rdr_line = "rdr-anchor \"com.xpo\"";
+        if let Some(idx) = last_rdr_anchor_idx {
+            lines.insert(idx + 1, rdr_line);
+        } else {
+            lines.push(rdr_line);
+        }
+        inserted_rdr = true;
+    }
+
+    if !inserted_load {
+        lines.push("load anchor \"com.xpo\" from \"/etc/pf.anchors/com.xpo\"");
+        inserted_load = true;
+    }
+
+    let _ = (inserted_rdr, inserted_load);
+    lines.join("\n") + "\n"
 }
 
 #[cfg(target_os = "linux")]
@@ -353,4 +400,117 @@ fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("     Proxy will listen on :10443 and :10080 directly");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_old_xpo_block_to_anchor() {
+        let old_pf = "\
+scrub-anchor \"com.apple/*\"
+nat-anchor \"com.apple/*\"
+rdr-anchor \"com.apple/*\"
+# xpo-start
+rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443
+rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080
+# xpo-end
+dummynet-anchor \"com.apple/*\"
+anchor \"com.apple/*\"
+load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"";
+
+        let result = build_pf_conf_with_anchor(old_pf);
+
+        assert!(
+            !result.contains("# xpo-start"),
+            "old markers should be stripped"
+        );
+        assert!(
+            !result.contains("# xpo-end"),
+            "old markers should be stripped"
+        );
+        assert!(
+            !result.contains("rdr pass on lo0"),
+            "old inline rules should be stripped"
+        );
+        assert!(
+            result.contains("rdr-anchor \"com.xpo\""),
+            "should have anchor ref"
+        );
+        assert!(
+            result.contains("load anchor \"com.xpo\" from \"/etc/pf.anchors/com.xpo\""),
+            "should have load anchor"
+        );
+    }
+
+    #[test]
+    fn anchor_inserted_after_last_rdr_anchor() {
+        let pf = "\
+scrub-anchor \"com.apple/*\"
+nat-anchor \"com.apple/*\"
+rdr-anchor \"com.apple/*\"
+dummynet-anchor \"com.apple/*\"
+anchor \"com.apple/*\"
+load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"";
+
+        let result = build_pf_conf_with_anchor(pf);
+        let lines: Vec<&str> = result.lines().collect();
+
+        let apple_rdr_idx = lines
+            .iter()
+            .position(|l| *l == "rdr-anchor \"com.apple/*\"")
+            .unwrap();
+        let xpo_rdr_idx = lines
+            .iter()
+            .position(|l| *l == "rdr-anchor \"com.xpo\"")
+            .unwrap();
+
+        assert_eq!(
+            xpo_rdr_idx,
+            apple_rdr_idx + 1,
+            "xpo anchor should follow apple rdr-anchor"
+        );
+    }
+
+    #[test]
+    fn idempotent_does_not_duplicate() {
+        let pf = "\
+rdr-anchor \"com.apple/*\"
+rdr-anchor \"com.xpo\"
+anchor \"com.apple/*\"
+load anchor \"com.xpo\" from \"/etc/pf.anchors/com.xpo\"";
+
+        let result = build_pf_conf_with_anchor(pf);
+        let rdr_count = result.matches("rdr-anchor \"com.xpo\"").count();
+        let load_count = result.matches("load anchor \"com.xpo\"").count();
+        assert_eq!(rdr_count, 1, "should have exactly 1 rdr-anchor");
+        assert_eq!(load_count, 1, "should have exactly 1 load anchor");
+    }
+
+    #[test]
+    fn no_rdr_anchor_appends_at_end() {
+        let pf = "anchor \"com.apple/*\"";
+        let result = build_pf_conf_with_anchor(pf);
+
+        assert!(result.contains("rdr-anchor \"com.xpo\""));
+        assert!(result.contains("load anchor \"com.xpo\""));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parse_pf_token_valid() {
+        assert_eq!(parse_pf_token("Token : 12345\n"), Some(12345));
+        assert_eq!(
+            parse_pf_token("pf enabled\nToken : 42\nsome other line"),
+            Some(42)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parse_pf_token_missing() {
+        assert_eq!(parse_pf_token("pf enabled\n"), None);
+        assert_eq!(parse_pf_token(""), None);
+    }
 }
