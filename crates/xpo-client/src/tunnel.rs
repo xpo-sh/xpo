@@ -403,7 +403,24 @@ fn print_banner(url: &str, port: u16, user: &str) {
     );
     println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
     println!("  {d}\u{2570}{border}\u{256f}{r}");
+
+    print_qr(url);
+
     println!();
+}
+
+fn print_qr(url: &str) {
+    use fast_qr::qr::QRBuilder;
+
+    let Ok(qr) = QRBuilder::new(url).build() else {
+        return;
+    };
+    let qr_str = qr.to_str();
+    let d = "\x1b[2m";
+    let r = "\x1b[0m";
+    for line in qr_str.lines() {
+        println!("  {d}{line}{r}");
+    }
 }
 
 async fn get_token() -> String {

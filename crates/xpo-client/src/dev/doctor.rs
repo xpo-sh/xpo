@@ -55,8 +55,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn check_port_forwarding(all_pass: &mut bool) {
-    use std::process::{Command, Stdio};
-
     if std::path::Path::new("/etc/pf.anchors/com.xpo").exists() {
         pass("Anchor file");
     } else {
@@ -71,26 +69,6 @@ fn check_port_forwarding(all_pass: &mut bool) {
         pass("pf.conf");
     } else {
         fail("pf.conf missing anchor");
-        *all_pass = false;
-    }
-
-    let pf_enabled = Command::new("pfctl")
-        .args(["-s", "info"])
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .output()
-        .map(|o| {
-            let out = String::from_utf8_lossy(&o.stdout);
-            let err = String::from_utf8_lossy(&o.stderr);
-            let combined = format!("{out}{err}");
-            combined.contains("Status: Enabled")
-        })
-        .unwrap_or(false);
-
-    if pf_enabled {
-        pass("pf enabled");
-    } else {
-        warn("pf not enabled");
         *all_pass = false;
     }
 }
