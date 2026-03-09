@@ -21,6 +21,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 time = "0.3"
 console = "0.15"
+dialoguer = "0.11"
 indicatif = "0.17"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }

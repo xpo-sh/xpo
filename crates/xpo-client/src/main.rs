@@ -28,8 +28,8 @@ enum Commands {
     },
     Dev(DevArgs),
     Login {
-        #[arg(long, default_value = "github")]
-        provider: String,
+        #[arg(long)]
+        provider: Option<String>,
     },
     Logout,
     Status,
@@ -109,7 +109,20 @@ async fn main() {
                 std::env::var("XPO_SERVER").unwrap_or_else(|_| "ws.xpo.sh:8081".to_string());
             tunnel::run(port, subdomain, &server, logs).await
         }
-        Commands::Login { provider } => auth::login(&provider).await,
+        Commands::Login { provider } => {
+            let provider = provider.unwrap_or_else(|| {
+                let items = vec!["GitHub", "Google"];
+                let selection =
+                    dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                        .with_prompt("  Select provider")
+                        .items(&items)
+                        .default(0)
+                        .interact()
+                        .unwrap_or(0);
+                items[selection].to_lowercase()
+            });
+            auth::login(&provider).await
+        }
         Commands::Logout => {
             let mut config = xpo_core::config::Config::load().unwrap_or_default();
             config.clear_tokens();
