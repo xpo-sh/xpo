@@ -9,7 +9,8 @@ mod tunnel;
 #[command(
     name = "xpo",
     about = "Expose local services via secure tunnels",
-    version
+    version,
+    after_help = "Run 'xpo <command> --help' for more info"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -18,6 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Expose a local port to the internet")]
     Share {
         port: u16,
         #[arg(short, long)]
@@ -27,12 +29,16 @@ enum Commands {
         #[arg(long, default_value = "10")]
         logs: usize,
     },
+    #[command(about = "Local HTTPS development with .test domains")]
     Dev(DevArgs),
+    #[command(about = "Authenticate with GitHub or Google")]
     Login {
         #[arg(long)]
         provider: Option<String>,
     },
+    #[command(about = "Clear session")]
     Logout,
+    #[command(about = "Show login info")]
     Status,
 }
 
