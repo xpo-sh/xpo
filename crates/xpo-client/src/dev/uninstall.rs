@@ -121,15 +121,43 @@ fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(target_os = "macos")]
 fn remove_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Stdio;
-    let status = Command::new("sudo")
-        .args(["pfctl", "-a", "com.apple/xpo", "-F", "all"])
-        .stderr(Stdio::null())
-        .stdout(Stdio::null())
-        .status()?;
 
-    if !status.success() {
-        return Err("Failed to flush pf rules".into());
+    let pf_conf = std::fs::read_to_string("/etc/pf.conf").unwrap_or_default();
+    if !pf_conf.contains("# xpo-start") {
+        return Ok(());
     }
+
+    let mut new_lines = Vec::new();
+    let mut skip = false;
+    for line in pf_conf.lines() {
+        if line.contains("# xpo-start") {
+            skip = true;
+            continue;
+        }
+        if line.contains("# xpo-end") {
+            skip = false;
+            continue;
+        }
+        if !skip {
+            new_lines.push(line);
+        }
+    }
+
+    let new_conf = new_lines.join("\n") + "\n";
+    let tmp = std::env::temp_dir().join("xpo-pf.conf");
+    std::fs::write(&tmp, &new_conf)?;
+
+    let _ = Command::new("sudo")
+        .args(["cp", &tmp.to_string_lossy(), "/etc/pf.conf"])
+        .stderr(Stdio::null())
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+
+    let _ = Command::new("sudo")
+        .args(["pfctl", "-f", "/etc/pf.conf"])
+        .stderr(Stdio::null())
+        .output();
+
     Ok(())
 }
 

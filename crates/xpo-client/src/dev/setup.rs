@@ -113,16 +113,8 @@ fn is_ca_trusted() -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_port_forwarding_active() -> bool {
-    let output = Command::new("pfctl")
-        .args(["-a", "com.apple/xpo", "-s", "nat"])
-        .stderr(Stdio::null())
-        .output();
-
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.contains("port = 443") && stdout.contains("port = 80")
-        }
+    match std::fs::read_to_string("/etc/pf.conf") {
+        Ok(contents) => contents.contains("# xpo-start") && contents.contains("port 10443"),
         Err(_) => false,
     }
 }
@@ -218,23 +210,49 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn setup_port_forwarding_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = std::env::temp_dir().join("xpo-pf-rules");
-    std::fs::write(
-        &tmp,
-        "rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443\nrdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080\n",
-    )?;
+    let xpo_rules = "\n# xpo-start\nrdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 10443\nrdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 10080\n# xpo-end\n";
+
+    let pf_conf = std::fs::read_to_string("/etc/pf.conf").unwrap_or_default();
+
+    if pf_conf.contains("# xpo-start") {
+        return Ok(());
+    }
+
+    let new_conf = format!("{}{}", pf_conf.trim_end(), xpo_rules);
+    let tmp = std::env::temp_dir().join("xpo-pf.conf");
+    std::fs::write(&tmp, &new_conf)?;
 
     let output = Command::new("sudo")
-        .args(["pfctl", "-a", "com.apple/xpo", "-f"])
-        .arg(&tmp)
+        .args(["cp", &tmp.to_string_lossy(), "/etc/pf.conf"])
         .stderr(Stdio::piped())
         .output()?;
-
     let _ = std::fs::remove_file(&tmp);
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to load pf rules: {err}").into());
+        return Err(format!("Failed to update /etc/pf.conf: {err}").into());
+    }
+
+    let output = Command::new("sudo")
+        .args(["pfctl", "-f", "/etc/pf.conf"])
+        .stderr(Stdio::piped())
+        .output()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        if !err.contains("ALTQ") {
+            return Err(format!("Failed to reload pf rules: {err}").into());
+        }
+    }
+
+    let output = Command::new("sudo")
+        .args(["pfctl", "-e"])
+        .stderr(Stdio::piped())
+        .output()?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && !stderr.contains("already enabled") {
+        return Err(format!("Failed to enable pf: {stderr}").into());
     }
 
     Ok(())
