@@ -520,4 +520,14 @@ mod tests {
         let actual_body = &patched[header_end + 4..];
         assert!(actual_body.is_empty(), "empty body must stay empty");
     }
+
+    #[test]
+    fn qr_code_generates_for_valid_url() {
+        use fast_qr::qr::QRBuilder;
+        let qr = QRBuilder::new("https://myapp.xpo.sh").build();
+        assert!(qr.is_ok());
+        let qr_str = qr.unwrap().to_str();
+        assert!(!qr_str.is_empty());
+        assert!(qr_str.contains('█'));
+    }
 }
