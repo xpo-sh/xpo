@@ -85,9 +85,10 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (code_verifier, code_challenge) = generate_pkce();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:9876").await?;
 
+    let nonce = random_alphanumeric(8);
     let url = format!(
-        "{}/authorize?provider={}&redirect_to=http://127.0.0.1:9876/callback&code_challenge={}&code_challenge_method=S256",
-        auth, provider, code_challenge
+        "{}/authorize?provider={}&redirect_to=http://127.0.0.1:9876/callback&code_challenge={}&code_challenge_method=S256&t={}",
+        auth, provider, code_challenge, nonce
     );
 
     println!(
