@@ -100,13 +100,11 @@ $ xpo dev 3000 -n myapp
 | | xpo | ngrok | Cloudflare Tunnel |
 |---|---|---|---|
 | Open source | ✅ MIT | ❌ Proprietary | ❌ Proprietary |
-| Self-hostable | ✅ | ❌ | ❌ |
 | Local HTTPS | ✅ `.test` domains | ❌ | ❌ |
-| Custom subdomains | ✅ Free | 💰 Paid | ✅ Free |
+| Custom subdomains | ✅ | 💰 Paid | ✅ |
 | Written in | Rust | Go | Go |
 | Binary size | ~5 MB | ~25 MB | ~30 MB |
 | WebSocket relay | ✅ | ✅ | ✅ |
-| Auth required | ✅ OAuth | ✅ Account | ✅ Account |
 
 ## Features
 
@@ -118,7 +116,7 @@ $ xpo dev 3000 -n myapp
 - **Custom subdomains** -`xpo share 3000 -s myapp`
 - **GitHub/Google auth** -OAuth login, no email/password
 - **Fast** -Rust + tokio, sub-millisecond proxy overhead
-- **Open source** -MIT licensed, self-hostable
+- **Open source** -MIT licensed
 
 ## Commands
 
@@ -149,13 +147,6 @@ We welcome contributions! Here's how you can help:
 - 💡 [Request features](https://github.com/xpo-sh/xpo/issues/new?template=feature_request.md)
 - 🔧 [Submit a PR](https://github.com/xpo-sh/xpo/pulls)
 
-```bash
-git clone https://github.com/xpo-sh/xpo.git
-cd xpo
-cargo build --workspace
-cargo test --workspace
-```
-
 ## Roadmap
 
 - Local dashboard with request inspector
@@ -163,8 +154,6 @@ cargo test --workspace
 - QR code for mobile testing
 - Connection pooling
 - Project config (xpo.yaml)
-
-See [ROADMAP.md](docs/ROADMAP.md) for the full plan.
 
 ## License
 
