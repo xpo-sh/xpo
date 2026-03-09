@@ -160,10 +160,12 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     config.email = email.clone();
     config.save()?;
 
+    let provider_label = provider[..1].to_uppercase() + &provider[1..];
     println!(
-        "  {} Logged in as {}",
+        "  {} Logged in as {} ({})",
         style("✓").green().bold(),
-        style(email.as_deref().unwrap_or("user")).cyan()
+        style(email.as_deref().unwrap_or("user")).cyan(),
+        style(provider_label).dim()
     );
 
     Ok(())
