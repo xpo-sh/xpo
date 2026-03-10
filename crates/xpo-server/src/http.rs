@@ -5,6 +5,7 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use xpo_core::auth::JwtValidator;
 use xpo_core::error_page::ErrorPage;
 use xpo_core::StreamId;
 
@@ -22,8 +23,12 @@ pub async fn handle_http(
     let subdomain = extract_subdomain(&host, &state.config.base_domain);
 
     if subdomain.is_empty() {
-        if req.uri().path() == "/healthz" {
+        let path = req.uri().path();
+        if path == "/healthz" {
             return Ok(healthz_response(&state));
+        }
+        if path == "/api/tunnels" {
+            return Ok(tunnels_api_response(&state, &req));
         }
         return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found", ""));
     }
@@ -308,6 +313,73 @@ fn healthz_response(state: &SharedState) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
+fn tunnels_api_response(
+    state: &SharedState,
+    req: &Request<hyper::body::Incoming>,
+) -> Response<Full<Bytes>> {
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let token = match token {
+        Some(t) => t,
+        None => {
+            let body = r#"{"error":"unauthorized"}"#;
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap();
+        }
+    };
+
+    let validator = JwtValidator::new(&state.config.jwt_secret);
+    let claims = match validator.validate(token) {
+        Ok(c) => c,
+        Err(_) => {
+            let body = r#"{"error":"unauthorized"}"#;
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap();
+        }
+    };
+
+    let user_id = &claims.sub;
+    let mut tunnels = Vec::new();
+
+    for entry in state.tunnels.iter() {
+        let tunnel = entry.value();
+        if tunnel.user_id != *user_id {
+            continue;
+        }
+        let created_at_secs = tunnel.created_at.elapsed().as_secs();
+        let ttl_remaining_secs = tunnel
+            .ttl_secs
+            .map(|ttl| ttl.saturating_sub(created_at_secs));
+        tunnels.push(serde_json::json!({
+            "subdomain": tunnel.subdomain,
+            "url": state.config.tunnel_url(&tunnel.subdomain),
+            "port": tunnel.port,
+            "created_at_secs": created_at_secs,
+            "has_password": tunnel.password.is_some(),
+            "ttl_secs": tunnel.ttl_secs,
+            "ttl_remaining_secs": ttl_remaining_secs,
+        }));
+    }
+
+    let body = serde_json::to_string(&tunnels).unwrap_or_else(|_| "[]".to_string());
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("content-length", body.len())
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
 async fn serialize_request(req: Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
     let mut bytes = serialize_request_headers(&req, host);
     let body = req
@@ -507,5 +579,50 @@ mod tests {
         let encoded2 = base64::engine::general_purpose::STANDARD.encode(":mypass");
         let header2 = format!("Basic {encoded2}");
         assert!(verify_basic_auth(&header2, "mypass"));
+    }
+
+    #[test]
+    fn tunnels_api_json_format() {
+        use crate::config::ServerConfig;
+        use crate::state::{ServerState, Tunnel, TunnelMessage};
+        use std::sync::Arc;
+
+        let config = ServerConfig::from_env();
+        let state = ServerState::new(Arc::new(config));
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TunnelMessage>(1);
+        state.tunnels.insert(
+            "testapp".to_string(),
+            Tunnel {
+                user_id: "user-123".to_string(),
+                subdomain: "testapp".to_string(),
+                tx,
+                password: Some("secret".to_string()),
+                port: 3000,
+                created_at: std::time::Instant::now(),
+                ttl_secs: Some(3600),
+            },
+        );
+
+        let mut found = Vec::new();
+        for entry in state.tunnels.iter() {
+            let tunnel = entry.value();
+            if tunnel.user_id == "user-123" {
+                found.push(serde_json::json!({
+                    "subdomain": tunnel.subdomain,
+                    "port": tunnel.port,
+                    "has_password": tunnel.password.is_some(),
+                    "ttl_secs": tunnel.ttl_secs,
+                }));
+            }
+        }
+
+        let json = serde_json::to_string(&found).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["subdomain"], "testapp");
+        assert_eq!(parsed[0]["port"], 3000);
+        assert_eq!(parsed[0]["has_password"], true);
+        assert_eq!(parsed[0]["ttl_secs"], 3600);
     }
 }
