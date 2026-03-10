@@ -32,7 +32,7 @@ pub async fn handle_http(
         if req.uri().path() == "/healthz" {
             return Ok(healthz_response(&state));
         }
-        return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found"));
+        return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found", ""));
     }
 
     let tunnel_tx = match state.tunnels.get(&subdomain) {
@@ -41,6 +41,7 @@ pub async fn handle_http(
             return Ok(text_response(
                 StatusCode::NOT_FOUND,
                 &format!("{subdomain}.{} is not connected", state.config.base_domain),
+                "The tunnel may have been closed",
             ));
         }
     };
@@ -73,14 +74,16 @@ pub async fn handle_http(
             state.pending.remove(&stream_id);
             return Ok(text_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "tunnel overloaded",
+                "Tunnel overloaded",
+                "Too many concurrent requests",
             ));
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
             state.pending.remove(&stream_id);
             return Ok(text_response(
                 StatusCode::BAD_GATEWAY,
-                "tunnel disconnected",
+                "Tunnel disconnected",
+                "The client may have lost connection",
             ));
         }
     }
@@ -91,14 +94,16 @@ pub async fn handle_http(
             state.pending.remove(&stream_id);
             Ok(text_response(
                 StatusCode::BAD_GATEWAY,
-                "tunnel dropped request",
+                "Tunnel dropped request",
+                "The client closed before responding",
             ))
         }
         Err(_) => {
             state.pending.remove(&stream_id);
             Ok(text_response(
                 StatusCode::GATEWAY_TIMEOUT,
-                "upstream timeout",
+                "Upstream timeout",
+                "The local server didn't respond in time",
             ))
         }
     }
@@ -128,14 +133,16 @@ async fn handle_ws_upgrade(
             state.pending.remove(&stream_id);
             return Ok(text_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "tunnel overloaded",
+                "Tunnel overloaded",
+                "Too many concurrent requests",
             ));
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
             state.pending.remove(&stream_id);
             return Ok(text_response(
                 StatusCode::BAD_GATEWAY,
-                "tunnel disconnected",
+                "Tunnel disconnected",
+                "The client may have lost connection",
             ));
         }
     }
@@ -144,7 +151,11 @@ async fn handle_ws_upgrade(
         Ok(Ok(data)) => data,
         _ => {
             state.pending.remove(&stream_id);
-            return Ok(text_response(StatusCode::BAD_GATEWAY, "ws upgrade failed"));
+            return Ok(text_response(
+                StatusCode::BAD_GATEWAY,
+                "WebSocket upgrade failed",
+                "The local server rejected the upgrade",
+            ));
         }
     };
 
@@ -308,7 +319,11 @@ fn serialize_request_headers(req: &Request<hyper::body::Incoming>, host: &str) -
 
 fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
     if raw.is_empty() {
-        return text_response(StatusCode::BAD_GATEWAY, "empty response from upstream");
+        return text_response(
+            StatusCode::BAD_GATEWAY,
+            "Empty response from upstream",
+            "The local server sent no data",
+        );
     }
 
     let header_end = raw
@@ -350,12 +365,17 @@ fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
     builder = builder.header("content-length", body_bytes.len());
     builder
         .body(Full::new(body_bytes))
-        .unwrap_or_else(|_| text_response(status, "response build error"))
+        .unwrap_or_else(|_| text_response(status, "Response build error", ""))
 }
 
-fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
+fn text_response(status: StatusCode, message: &str, hint: &str) -> Response<Full<Bytes>> {
     let code = status.as_u16();
-    let safe_body = html_escape(body);
+    let safe_message = html_escape(message);
+    let hint_html = if hint.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"hint\">{}</p>", html_escape(hint))
+    };
     let html = format!(
         "<!DOCTYPE html>\
         <html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -384,8 +404,8 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         </style></head>\
         <body><div class=\"c\">\
         <p class=\"code\">{code}</p>\
-        <p class=\"msg\">{safe_body}</p>\
-        <p class=\"hint\"><a href=\"https://xpo.sh\">xpo.sh</a></p>\
+        <p class=\"msg\">{safe_message}</p>\
+        {hint_html}\
         </div>\
         <div class=\"brand\"><span>xpo</span>.sh</div>\
         </body></html>"
