@@ -74,6 +74,7 @@ fn is_ca_trusted() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn is_ca_trusted() -> bool {
     std::path::Path::new("/usr/local/share/ca-certificates/xpo-ca.crt").exists()
+        || std::path::Path::new("/etc/pki/ca-trust/source/anchors/xpo-ca.pem").exists()
 }
 
 // --- Remove functions ---
@@ -98,12 +99,20 @@ fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "linux")]
 fn untrust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = Command::new("sudo")
-        .args(["rm", "-f", "/usr/local/share/ca-certificates/xpo-ca.crt"])
-        .output()?;
+    use crate::dev::setup::linux_ca_paths;
+    let (cert_path, update_cmd) = linux_ca_paths();
 
     let _ = Command::new("sudo")
-        .args(["update-ca-certificates", "--fresh"])
+        .args(["rm", "-f", cert_path])
+        .output()?;
+
+    let update_arg = if update_cmd == "update-ca-trust" {
+        "extract"
+    } else {
+        "--fresh"
+    };
+    let _ = Command::new("sudo")
+        .args([update_cmd, update_arg])
         .output()?;
 
     Ok(())

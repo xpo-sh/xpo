@@ -110,7 +110,8 @@ pub(crate) fn is_ca_trusted() -> bool {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn is_ca_trusted() -> bool {
-    std::path::Path::new("/usr/local/share/ca-certificates/xpo-ca.crt").exists()
+    let (cert_path, _) = linux_ca_paths();
+    std::path::Path::new(cert_path).exists()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -183,25 +184,42 @@ fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "linux")]
-fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("sudo")
-        .args([
-            "cp",
-            &ca::ca_cert_path().to_string_lossy(),
+pub(crate) fn linux_ca_paths() -> (&'static str, &'static str) {
+    if std::path::Path::new("/etc/pki/ca-trust/source/anchors").exists() {
+        (
+            "/etc/pki/ca-trust/source/anchors/xpo-ca.pem",
+            "update-ca-trust",
+        )
+    } else {
+        (
             "/usr/local/share/ca-certificates/xpo-ca.crt",
-        ])
+            "update-ca-certificates",
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn trust_ca_platform() -> Result<(), Box<dyn std::error::Error>> {
+    let (cert_dest, update_cmd) = linux_ca_paths();
+
+    let output = Command::new("sudo")
+        .args(["cp", &ca::ca_cert_path().to_string_lossy(), cert_dest])
+        .stderr(Stdio::piped())
         .output()?;
 
     if !output.status.success() {
-        return Err("Failed to copy CA cert".into());
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to copy CA cert to {cert_dest}: {err}").into());
     }
 
     let output = Command::new("sudo")
-        .args(["update-ca-certificates"])
+        .args([update_cmd])
+        .stderr(Stdio::piped())
         .output()?;
 
     if !output.status.success() {
-        return Err("Failed to update CA certificates".into());
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to run {update_cmd}: {err}").into());
     }
     Ok(())
 }
