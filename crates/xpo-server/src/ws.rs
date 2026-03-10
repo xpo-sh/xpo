@@ -37,11 +37,9 @@ pub async fn handle_websocket<S>(stream: S, state: SharedState)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-        max_message_size: Some(MAX_WS_MESSAGE_SIZE),
-        max_frame_size: Some(MAX_WS_FRAME_SIZE),
-        ..Default::default()
-    };
+    let mut ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+    ws_config.max_message_size = Some(MAX_WS_MESSAGE_SIZE);
+    ws_config.max_frame_size = Some(MAX_WS_FRAME_SIZE);
 
     let ws_stream = match tokio_tungstenite::accept_async_with_config(stream, Some(ws_config)).await
     {
@@ -74,14 +72,18 @@ where
                     user: claims.email.unwrap_or_default(),
                     user_id: claims.sub,
                 };
-                let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+                let _ = ws_write
+                    .send(Message::Text(resp.to_json().unwrap().into()))
+                    .await;
                 info!(user_id = %user_id, "authenticated");
             }
             Err(e) => {
                 let resp = ServerControl::AuthFail {
                     reason: e.to_string(),
                 };
-                let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+                let _ = ws_write
+                    .send(Message::Text(resp.to_json().unwrap().into()))
+                    .await;
                 warn!("auth failed: {e}");
                 return;
             }
@@ -90,21 +92,21 @@ where
             let resp = ServerControl::AuthFail {
                 reason: "expected Auth message".into(),
             };
-            let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+            let _ = ws_write
+                .send(Message::Text(resp.to_json().unwrap().into()))
+                .await;
             return;
         }
     }
 
-    let user_tunnel_count = state
-        .tunnels
-        .iter()
-        .filter(|entry| entry.value().user_id == user_id)
-        .count();
+    let user_tunnel_count = state.get_user_tunnel_count(&user_id);
     if user_tunnel_count >= MAX_TUNNELS_PER_USER {
         let resp = ServerControl::Error {
             message: format!("max {MAX_TUNNELS_PER_USER} tunnels per user"),
         };
-        let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+        let _ = ws_write
+            .send(Message::Text(resp.to_json().unwrap().into()))
+            .await;
         warn!(user_id = %user_id, "tunnel limit reached");
         return;
     }
@@ -125,7 +127,9 @@ where
                 let resp = ServerControl::Error {
                     message: "invalid subdomain".into(),
                 };
-                let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+                let _ = ws_write
+                    .send(Message::Text(resp.to_json().unwrap().into()))
+                    .await;
                 warn!(subdomain = %sub, "invalid subdomain");
                 return;
             }
@@ -135,7 +139,9 @@ where
             let resp = ServerControl::Error {
                 message: "expected Hello message".into(),
             };
-            let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+            let _ = ws_write
+                .send(Message::Text(resp.to_json().unwrap().into()))
+                .await;
             return;
         }
     };
@@ -147,7 +153,9 @@ where
             let resp = ServerControl::Error {
                 message: "subdomain taken".into(),
             };
-            let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+            let _ = ws_write
+                .send(Message::Text(resp.to_json().unwrap().into()))
+                .await;
             warn!(subdomain = %subdomain, "subdomain taken");
             return;
         }
@@ -157,6 +165,7 @@ where
                 subdomain: subdomain.clone(),
                 tx: tunnel_tx,
             });
+            state.increment_user_tunnels(&user_id);
         }
     }
 
@@ -165,7 +174,9 @@ where
         url: url.clone(),
         subdomain: subdomain.clone(),
     };
-    let _ = ws_write.send(Message::Text(resp.to_json().unwrap())).await;
+    let _ = ws_write
+        .send(Message::Text(resp.to_json().unwrap().into()))
+        .await;
     info!(subdomain = %subdomain, url = %url, "tunnel ready");
 
     let state_clone = state.clone();
@@ -181,7 +192,7 @@ where
                 tokio::select! {
                     _ = heartbeat_interval.tick() => {
                         let hb = Packet::heartbeat().encode();
-                        if ws_write.send(Message::Binary(hb)).await.is_err() {
+                        if ws_write.send(Message::Binary(hb.into())).await.is_err() {
                             break;
                         }
                     }
@@ -189,23 +200,23 @@ where
                         match msg {
                             Some(TunnelMessage::HttpRequest { stream_id, raw_request }) => {
                                 let conn = Packet::connection(stream_id).encode();
-                                if ws_write.send(Message::Binary(conn)).await.is_err() {
+                                if ws_write.send(Message::Binary(conn.into())).await.is_err() {
                                     break;
                                 }
                                 let data = Packet::data(stream_id, raw_request).encode();
-                                if ws_write.send(Message::Binary(data)).await.is_err() {
+                                if ws_write.send(Message::Binary(data.into())).await.is_err() {
                                     break;
                                 }
                             }
                             Some(TunnelMessage::StreamData { stream_id, data }) => {
                                 let pkt = Packet::data(stream_id, data).encode();
-                                if ws_write.send(Message::Binary(pkt)).await.is_err() {
+                                if ws_write.send(Message::Binary(pkt.into())).await.is_err() {
                                     break;
                                 }
                             }
                             Some(TunnelMessage::StreamEnd { stream_id }) => {
                                 let pkt = Packet::end(stream_id).encode();
-                                let _ = ws_write.send(Message::Binary(pkt)).await;
+                                let _ = ws_write.send(Message::Binary(pkt.into())).await;
                             }
                             None => break,
                         }
@@ -233,7 +244,7 @@ where
                                 }
                                 PacketType::End => {
                                     state_clone.pending.remove(&packet.stream_id);
-                                    state_clone.streams.remove(&packet.stream_id);
+                                    state_clone.remove_stream(&packet.stream_id);
                                 }
                                 _ => {}
                             }
@@ -253,10 +264,10 @@ where
         } => {},
     };
 
-    state.tunnels.remove(&subdomain);
-    state
-        .streams
-        .retain(|_, stream| stream.tunnel_subdomain != subdomain);
+    if let Some((_, tunnel)) = state.tunnels.remove(&subdomain) {
+        state.decrement_user_tunnels(&tunnel.user_id);
+    }
+    state.remove_streams_for_subdomain(&subdomain);
     info!(subdomain = %subdomain, "tunnel closed");
 }
 

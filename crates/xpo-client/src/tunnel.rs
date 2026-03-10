@@ -77,7 +77,7 @@ async fn connect_and_run(
 
     let token = get_token().await;
     let auth = ClientControl::Auth { token };
-    ws_write.send(Message::Text(auth.to_json()?)).await?;
+    ws_write.send(Message::Text(auth.to_json()?.into())).await?;
 
     let auth_resp = ws_read.next().await.ok_or("no auth response")??;
 
@@ -85,7 +85,9 @@ async fn connect_and_run(
         Message::Text(text) => match ServerControl::from_json(&text)? {
             ServerControl::AuthOk { user, .. } => {
                 let hello = ClientControl::Hello { port, subdomain };
-                ws_write.send(Message::Text(hello.to_json()?)).await?;
+                ws_write
+                    .send(Message::Text(hello.to_json()?.into()))
+                    .await?;
 
                 let hello_resp = ws_read.next().await.ok_or("no hello response")??;
 
@@ -139,7 +141,7 @@ async fn connect_and_run(
                                         tokio::spawn(async move {
                                             let result = proxy_to_upstream(port, &payload, stream_id, &ls).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
-                                            let _ = tx.send(Message::Binary(resp_pkt.encode()));
+                                            let _ = tx.send(Message::Binary(resp_pkt.encode().into()));
                                             if let Some(relay) = result.ws_relay {
                                                 let (relay_data_tx, mut relay_data_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                                                 relays.insert(stream_id, relay_data_tx);
@@ -156,7 +158,7 @@ async fn connect_and_run(
                                                                 Ok(0) | Err(_) => break,
                                                                 Ok(n) => {
                                                                     let pkt = Packet::data(sid, buf[..n].to_vec());
-                                                                    if tx3.send(Message::Binary(pkt.encode())).is_err() {
+                                                                    if tx3.send(Message::Binary(pkt.encode().into())).is_err() {
                                                                         break;
                                                                     }
                                                                 }
@@ -172,19 +174,19 @@ async fn connect_and_run(
                                                     });
                                                     let _ = tokio::join!(read_task, write_task);
                                                     let end_pkt = Packet::end(sid);
-                                                    let _ = tx2.send(Message::Binary(end_pkt.encode()));
+                                                    let _ = tx2.send(Message::Binary(end_pkt.encode().into()));
                                                     relays.remove(&sid);
                                                 });
                                             } else {
                                                 let end_pkt = Packet::end(stream_id);
-                                                let _ = tx.send(Message::Binary(end_pkt.encode()));
+                                                let _ = tx.send(Message::Binary(end_pkt.encode().into()));
                                             }
                                         });
                                     }
                                 }
                                 PacketType::Heartbeat => {
                                     let pong = Packet::pong();
-                                    let _ = ws_write.send(Message::Binary(pong.encode())).await;
+                                    let _ = ws_write.send(Message::Binary(pong.encode().into())).await;
                                 }
                                 PacketType::End => {}
                                 PacketType::Pong => {}

@@ -17,7 +17,7 @@ fn now() -> u64 {
 }
 
 fn random_alphanumeric(len: usize) -> String {
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     (0..len)
         .map(|_| {

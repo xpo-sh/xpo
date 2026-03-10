@@ -17,12 +17,12 @@ path = "src/main.rs"
 xpo-core = { path = "../xpo-core" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 time = "0.3"
-console = "0.15"
+console = "0.16"
 dialoguer = "0.12"
-indicatif = "0.17"
+indicatif = "0.18"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-pemfile = "2"
@@ -30,10 +30,10 @@ rustls-pki-types = "1"
 terminal_size = "0.4"
 futures-util = "0.3"
 dashmap = "6"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 sha2 = "0.10"
 base64 = "0.22"
 serde_json = "1"
-rand = "0.9"
+rand = "0.10"
 fast_qr = "0.13"
 tempfile = "3"
