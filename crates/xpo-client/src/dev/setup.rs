@@ -119,13 +119,47 @@ pub(crate) fn is_ca_trusted() -> bool {
     false
 }
 
+pub(crate) fn pf_output_has_forwarding(output: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(output);
+    s.contains("10443") && s.contains("10080")
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn verify_pf_runtime_state() -> bool {
+    let output = Command::new("pfctl")
+        .args(["-sn", "-a", "com.xpo"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(o) => pf_output_has_forwarding(&o.stdout),
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub(crate) fn auto_reload_pf() -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new("sudo")
+        .args(["-n", "pfctl", "-ef", "/etc/pf.conf"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("pfctl reload failed".into())
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn is_port_forwarding_active() -> bool {
     let anchor_exists = std::path::Path::new("/etc/pf.anchors/com.xpo").exists();
     let pf_configured = std::fs::read_to_string("/etc/pf.conf")
         .map(|c| c.contains("rdr-anchor \"com.xpo\""))
         .unwrap_or(false);
-    anchor_exists && pf_configured
+    let runtime_active = verify_pf_runtime_state();
+    anchor_exists && pf_configured && runtime_active
 }
 
 #[cfg(target_os = "linux")]
@@ -533,5 +567,25 @@ load anchor \"com.xpo\" from \"/etc/pf.anchors/com.xpo\"";
     fn parse_pf_token_missing() {
         assert_eq!(parse_pf_token("pf enabled\n"), None);
         assert_eq!(parse_pf_token(""), None);
+    }
+
+    #[test]
+    fn verify_pf_runtime_state_parses_anchor_output() {
+        let output_with_rules = b"rdr pass on lo0 inet proto tcp from any to any port = 443 -> 127.0.0.1 port 10443\nrdr pass on lo0 inet proto tcp from any to any port = 80 -> 127.0.0.1 port 10080\n";
+        assert!(pf_output_has_forwarding(output_with_rules));
+
+        let output_empty = b"";
+        assert!(!pf_output_has_forwarding(output_empty));
+
+        let output_only_https =
+            b"rdr pass on lo0 inet proto tcp from any to any port = 443 -> 127.0.0.1 port 10443\n";
+        assert!(
+            !pf_output_has_forwarding(output_only_https),
+            "must have BOTH 10443 and 10080"
+        );
+
+        let output_other =
+            b"rdr pass on lo0 inet proto tcp from any to any port = 443 -> 127.0.0.1 port 8443\n";
+        assert!(!pf_output_has_forwarding(output_other));
     }
 }
