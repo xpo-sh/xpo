@@ -38,37 +38,32 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         print_skip("~/.xpo/ not found");
     }
 
-    println!(
-        "\n  {} {}",
-        console::style("✓").green().bold(),
-        console::style("xpo data removed!").bold()
-    );
-
     let exe = std::env::current_exe().ok();
-    let exe_path = exe
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "xpo".to_string());
+    if let Some(ref exe_path) = exe {
+        if is_direct_install(exe_path) {
+            print_step(&format!("Removing binary ({})...", exe_path.display()));
+            if remove_binary(exe_path) {
+                print_done(&format!("Binary removed ({})", exe_path.display()));
+            } else {
+                print_warn(&format!(
+                    "Could not remove binary. Run manually:\n    sudo rm {}",
+                    exe_path.display()
+                ));
+            }
+        } else {
+            print_skip("Binary installed via package manager, skipping removal");
+            println!(
+                "    {}",
+                console::style("Run: brew uninstall xpo / cargo uninstall xpo / npm uninstall -g @xposh/cli").dim()
+            );
+        }
+    }
 
     println!(
-        "\n  {} To remove the binary, run:",
-        console::style("→").dim()
+        "\n  {} {}\n",
+        console::style("✓").green().bold(),
+        console::style("xpo has been uninstalled.").bold()
     );
-    println!(
-        "    {}",
-        console::style(format!("sudo rm {exe_path}")).dim()
-    );
-    println!(
-        "\n  {} Or if installed via a package manager:",
-        console::style("→").dim()
-    );
-    println!("    {}", console::style("brew uninstall xpo").dim());
-    println!("    {}", console::style("cargo uninstall xpo").dim());
-    println!(
-        "    {}",
-        console::style("npm uninstall -g @xposh/cli").dim()
-    );
-    println!();
 
     Ok(())
 }
@@ -87,4 +82,31 @@ fn print_warn(msg: &str) {
 
 fn print_skip(msg: &str) {
     println!("  {} {msg}", console::style("–").dim());
+}
+
+fn is_direct_install(exe_path: &std::path::Path) -> bool {
+    let resolved = exe_path.canonicalize().unwrap_or_else(|_| exe_path.to_path_buf());
+    let path_str = resolved.to_string_lossy();
+
+    let pkg_manager_paths = [
+        "/homebrew/",
+        "/Homebrew/",
+        "/Cellar/",
+        "/.cargo/bin/",
+        "/lib/node_modules/",
+    ];
+    !pkg_manager_paths.iter().any(|p| path_str.contains(p))
+}
+
+fn remove_binary(exe_path: &std::path::Path) -> bool {
+    if std::fs::remove_file(exe_path).is_ok() {
+        return true;
+    }
+
+    std::process::Command::new("sudo")
+        .args(["rm", "-f"])
+        .arg(exe_path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
