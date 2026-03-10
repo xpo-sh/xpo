@@ -19,9 +19,22 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(token) = config.auth.access_token.as_deref() {
             let server = std::env::var("XPO_API_SERVER")
                 .unwrap_or_else(|_| format!("https://{}", config.defaults.server));
-            if !json {
-                eprint!("\x1b[38;2;139;148;158m  Fetching tunnels...\x1b[0m");
-            }
+            let spinner_handle = if !json {
+                Some(tokio::spawn(async {
+                    let frames = [
+                        "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}",
+                        "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}",
+                    ];
+                    let mut i = 0;
+                    loop {
+                        eprint!("\r\x1b[38;2;88;166;255m  {} \x1b[38;2;139;148;158mFetching tunnels...\x1b[0m", frames[i % frames.len()]);
+                        i += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    }
+                }))
+            } else {
+                None
+            };
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
                 .build()
@@ -31,7 +44,8 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 .header("Authorization", format!("Bearer {}", token))
                 .send()
                 .await;
-            if !json {
+            if let Some(handle) = spinner_handle {
+                handle.abort();
                 eprint!("\r\x1b[2K");
             }
             if let Ok(resp) = api_result {
