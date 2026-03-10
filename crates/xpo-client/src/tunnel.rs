@@ -18,6 +18,7 @@ pub async fn run(
     visible_rows: usize,
     cors: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let http_client = build_http_client();
     let use_tui = TuiApp::check_terminal_size();
     let quit_flag = Arc::new(AtomicBool::new(false));
     let quit_notify = Arc::new(tokio::sync::Notify::new());
@@ -50,6 +51,7 @@ pub async fn run(
             subdomain.clone(),
             server,
             cors,
+            &http_client,
             &app_tx,
             &quit_flag,
             &quit_notify,
@@ -119,6 +121,7 @@ async fn connect_and_run(
     subdomain: Option<String>,
     server: &str,
     cors: bool,
+    client: &reqwest::Client,
     app_tx: &std::sync::mpsc::Sender<AppEvent>,
     quit_flag: &Arc<AtomicBool>,
     quit_notify: &Arc<tokio::sync::Notify>,
@@ -232,8 +235,9 @@ async fn connect_and_run(
                                         let tx = resp_tx.clone();
                                         let relays = ws_relays.clone();
                                         let event_tx = app_tx.clone();
+                                        let client_clone = client.clone();
                                         tokio::spawn(async move {
-                                            let result = proxy_to_upstream(port, &payload, stream_id, &event_tx, cors).await;
+                                            let result = proxy_to_upstream(&client_clone, port, &payload, stream_id, &event_tx, cors).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
                                             let _ = tx.send(Message::Binary(resp_pkt.encode().into()));
                                             if let Some(relay) = result.ws_relay {
@@ -398,13 +402,13 @@ struct WsRelay {
 static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 async fn proxy_to_upstream(
+    client: &reqwest::Client,
     port: u16,
     raw_request: &[u8],
     stream_id: xpo_core::StreamId,
     event_tx: &std::sync::mpsc::Sender<AppEvent>,
     cors: bool,
 ) -> ProxyResult {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let start = std::time::Instant::now();
 
     let req_str = String::from_utf8_lossy(raw_request);
@@ -426,6 +430,35 @@ async fn proxy_to_upstream(
         s.contains("upgrade: websocket")
     };
 
+    if is_ws_upgrade {
+        return proxy_ws_upgrade(port, raw_request, stream_id, event_tx, cors, start).await;
+    }
+
+    let response = proxy_http_reqwest(client, port, raw_request, cors).await;
+    let status = parse_response_status(&response);
+    send_request_log(event_tx, &method, &path, status, start.elapsed());
+
+    ProxyResult {
+        response,
+        ws_relay: None,
+    }
+}
+
+async fn proxy_ws_upgrade(
+    port: u16,
+    raw_request: &[u8],
+    stream_id: xpo_core::StreamId,
+    event_tx: &std::sync::mpsc::Sender<AppEvent>,
+    cors: bool,
+    start: std::time::Instant,
+) -> ProxyResult {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let req_str = String::from_utf8_lossy(raw_request);
+    let parts: Vec<&str> = req_str.split_whitespace().collect();
+    let method = parts.first().copied().unwrap_or("???").to_string();
+    let path = parts.get(1).copied().unwrap_or("/").to_string();
+
     let mut upstream = match TcpStream::connect(("localhost", port)).await {
         Ok(s) => s,
         Err(_) => {
@@ -437,12 +470,7 @@ async fn proxy_to_upstream(
         }
     };
 
-    let request_bytes = if is_ws_upgrade {
-        rewrite_host_header(raw_request, port)
-    } else {
-        let rewritten = rewrite_host_header(raw_request, port);
-        inject_connection_close(&rewritten)
-    };
+    let request_bytes = rewrite_host_header(raw_request, port);
 
     if upstream.write_all(&request_bytes).await.is_err() {
         send_request_log(event_tx, &method, &path, 502, start.elapsed());
@@ -461,8 +489,7 @@ async fn proxy_to_upstream(
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
                 response.extend_from_slice(&buf[..n]);
-                if is_ws_upgrade
-                    && response.starts_with(b"HTTP/1.1 101")
+                if response.starts_with(b"HTTP/1.1 101")
                     && response.windows(4).any(|w| w == b"\r\n\r\n")
                 {
                     if cors {
@@ -643,35 +670,7 @@ fn rewrite_host_header(raw: &[u8], port: u16) -> Vec<u8> {
     patched
 }
 
-fn inject_connection_close(raw: &[u8]) -> Vec<u8> {
-    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n");
-    let (header_bytes, body_bytes) = match header_end {
-        Some(pos) => (&raw[..pos], &raw[pos + 4..]),
-        None => return raw.to_vec(),
-    };
-
-    let header_str = String::from_utf8_lossy(header_bytes);
-    let first_crlf = match header_str.find("\r\n") {
-        Some(pos) => pos,
-        None => return raw.to_vec(),
-    };
-
-    let mut patched = Vec::with_capacity(raw.len() + 20);
-    patched.extend_from_slice(&header_bytes[..first_crlf + 2]);
-    patched.extend_from_slice(b"Connection: close\r\n");
-
-    for line in header_str[first_crlf + 2..].split("\r\n") {
-        if !line.is_empty() && !line.to_ascii_lowercase().starts_with("connection:") {
-            patched.extend_from_slice(line.as_bytes());
-            patched.extend_from_slice(b"\r\n");
-        }
-    }
-    patched.extend_from_slice(b"\r\n");
-    patched.extend_from_slice(body_bytes);
-    patched
-}
-
-#[allow(dead_code, clippy::type_complexity)]
+#[allow(clippy::type_complexity)]
 fn parse_raw_request(raw: &[u8]) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
     let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let header_bytes = &raw[..header_end];
@@ -701,7 +700,6 @@ fn parse_raw_request(raw: &[u8]) -> Option<(String, String, Vec<(String, String)
     Some((method, path, headers, body))
 }
 
-#[allow(dead_code)]
 fn serialize_response(
     status: u16,
     reason: &str,
@@ -731,7 +729,6 @@ fn serialize_response(
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
-#[allow(dead_code)]
 fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -744,7 +741,6 @@ fn build_http_client() -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
-#[allow(dead_code)]
 async fn proxy_http_reqwest(
     client: &reqwest::Client,
     port: u16,
@@ -859,87 +855,6 @@ async fn get_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn inject_connection_close_preserves_binary_body() {
-        let body: &[u8] = &[0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F, 0xDE, 0xAD];
-        let mut raw =
-            b"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 8\r\n\r\n".to_vec();
-        raw.extend_from_slice(body);
-
-        let patched = inject_connection_close(&raw);
-
-        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        let actual_body = &patched[header_end + 4..];
-        assert_eq!(actual_body, body, "binary body must be preserved exactly");
-    }
-
-    #[test]
-    fn inject_connection_close_adds_header() {
-        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let patched = inject_connection_close(raw);
-        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        let header_str = String::from_utf8_lossy(&patched[..header_end]);
-        assert!(
-            header_str.contains("Connection: close"),
-            "Connection: close header must be present"
-        );
-    }
-
-    #[test]
-    fn inject_connection_close_removes_existing_connection_header() {
-        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n";
-        let patched = inject_connection_close(raw);
-        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        let header_str = String::from_utf8_lossy(&patched[..header_end]).to_ascii_lowercase();
-
-        let count = header_str.matches("connection:").count();
-        assert_eq!(count, 1, "exactly one Connection header must remain");
-        assert!(
-            header_str.contains("connection: close"),
-            "the Connection header must be 'close'"
-        );
-    }
-
-    #[test]
-    fn inject_connection_close_preserves_json_body() {
-        let body = br#"{"key":"value"}"#;
-        let mut raw = format!(
-            "POST /data HTTP/1.1\r\nHost: api.test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        ).into_bytes();
-        raw.extend_from_slice(body);
-
-        let patched = inject_connection_close(&raw);
-
-        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        let actual_body = &patched[header_end + 4..];
-        assert_eq!(actual_body, body);
-
-        let header_str = String::from_utf8_lossy(&patched[..header_end]);
-        assert!(header_str.contains("Connection: close"));
-        assert!(header_str.contains("Content-Type: application/json"));
-        assert!(header_str.contains(&format!("Content-Length: {}", body.len())));
-    }
-
-    #[test]
-    fn inject_connection_close_no_crlfcrlf_returns_unchanged() {
-        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n";
-        let patched = inject_connection_close(raw);
-        assert_eq!(
-            patched, raw,
-            "input without header terminator must be returned as-is"
-        );
-    }
-
-    #[test]
-    fn inject_connection_close_empty_body() {
-        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let patched = inject_connection_close(raw);
-        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        let actual_body = &patched[header_end + 4..];
-        assert!(actual_body.is_empty(), "empty body must stay empty");
-    }
 
     #[test]
     fn rewrite_host_header_replaces_host() {
