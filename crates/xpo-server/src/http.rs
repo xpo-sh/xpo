@@ -351,7 +351,12 @@ fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
             {
                 continue;
             }
-            builder = builder.header(name, value);
+            if let (Ok(hn), Ok(hv)) = (
+                name.parse::<hyper::header::HeaderName>(),
+                value.parse::<hyper::header::HeaderValue>(),
+            ) {
+                builder = builder.header(hn, hv);
+            }
         }
     }
 
