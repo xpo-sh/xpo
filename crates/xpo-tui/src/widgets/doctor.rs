@@ -47,7 +47,7 @@ pub fn render_doctor_table(checks: &[DoctorCheck]) -> io::Result<()> {
     println!();
     println!("  {bd}\u{256d}{hr}\u{256e}{r}");
 
-    let title = "xpo dev doctor";
+    let title = "xpo doctor";
     let title_pad = content_width - 1 - title.len();
     println!(
         "  {bd}\u{2502}{r} {ac}{b}{title}{r}{}{bd}\u{2502}{r}",

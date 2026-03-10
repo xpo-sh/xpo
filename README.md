@@ -58,23 +58,20 @@ Expose any local port to the internet with a single command:
 $ xpo login
   ✓ Logged in as you@email.com
 
-$ xpo share 3000
-  ╭───────────────────────────────────────────╮
-  │                                           │
-  │  xpo share                                │
-  │                                           │
-  │  https://a1b2c3.xpo.sh -> localhost:3000  │
-  │                                           │
-  │  you@email.com - Ctrl+C to stop           │
-  │                                           │
-  ╰───────────────────────────────────────────╯
-
-  GET  /           200   12ms
-  GET  /_nuxt/     101   42ms
-  GET  /api/data   200    8ms
-
 $ xpo share 3000 -s myapp
-  https://myapp.xpo.sh -> localhost:3000
+╭─ xpo share ──────────────────────────────────╮
+│ https://myapp.xpo.sh -> localhost:3000       │
+│ 42 requests  5ms avg  98% ok                 │
+│ ● Connected                                  │
+│ you@email.com                                │
+╰──────────────────────────────────────────────╯
+╭─ QR ──╮╭─ Requests ──────────────────────────╮
+│ ▄██▀▄ ││ TIME      METHOD  PATH       STATUS │
+│ █▄▀▄█ ││ 16:25:04  GET     /          200    │
+│ ▀██▄▀ ││ 16:25:04  GET     /_nuxt/    304    │
+╰───────╯│ 16:25:05  POST    /api/data  200    │
+         ╰─────────────────────────────────────╯
+q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
 
 ## Local HTTPS
@@ -83,15 +80,18 @@ Real HTTPS on localhost with `.test` domains. No browser warnings, WebSocket/HMR
 
 ```bash
 $ xpo dev 3000 -n myapp
-  → Running first-time setup...
-  ✓ Root CA created (P-256 ECDSA, 10yr)
-  ✓ CA trusted in system keychain
-  ✓ Port forwarding active  443→10443, 80→10080
-
-  https://myapp.test -> localhost:3000
-
-  GET / 200 12ms
-  GET /_nuxt/ 101 42ms
+╭─ xpo dev ────────────────────────────────────╮
+│ https://myapp.test -> localhost:3000          │
+│ 12 requests  3ms avg  100% ok                │
+│ ● Connected                                  │
+╰──────────────────────────────────────────────╯
+╭─ Requests ───────────────────────────────────╮
+│ TIME      METHOD  PATH            STATUS     │
+│ 16:25:04  GET     /               200 (3ms)  │
+│ 16:25:04  GET     /_nuxt/entry    304 (2ms)  │
+│ 16:25:05  GET     /api/health     200 (1ms)  │
+╰──────────────────────────────────────────────╯
+q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
 
 ## Why xpo?
@@ -112,6 +112,7 @@ $ xpo dev 3000 -n myapp
 - **WebSocket relay** -HMR/hot-reload works through tunnel
 - **Local HTTPS** -trusted `.test` domains for development
 - **Auto-reconnect** -exponential backoff on connection loss
+- **Interactive TUI** -Ratatui-powered dashboard with QR code, request log, filtering
 - **Request logging** -colored terminal output with timing
 - **Custom subdomains** -`xpo share 3000 -s myapp`
 - **GitHub/Google auth** -OAuth login, no email/password
@@ -126,9 +127,9 @@ xpo share <port>            # public HTTPS tunnel
 xpo share <port> -s <name>  # custom subdomain
 xpo dev <port> -n <name>    # local HTTPS proxy (auto-setup on first use)
 xpo dev setup               # manual setup (CA, trust, port forwarding)
-xpo dev doctor              # diagnose setup issues
 xpo dev stop                # clean up /etc/hosts entries
 xpo dev uninstall           # remove CA, trust, and port forwarding
+xpo doctor                  # diagnose setup issues
 xpo status                  # show session info
 xpo logout                  # clear session
 ```
