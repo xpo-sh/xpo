@@ -109,8 +109,10 @@ $ xpo dev 3000 -n myapp
 
 - **HTTPS tunnels** - Let's Encrypt wildcard TLS, zero config
 - **WebSocket relay** - HMR/hot-reload works through tunnel
-- **Local HTTPS** - trusted `.test` domains for development
+- **Local HTTPS** - trusted `.test` domains with auto-renewing certs
+- **CORS injection** - `--cors` flag adds permissive CORS headers, handles preflight
 - **Auto-reconnect** - exponential backoff on connection loss
+- **Self-update** - `xpo update` to get the latest version
 - **Interactive TUI** - Ratatui-powered dashboard with QR code, request log, filtering
 - **Request logging** - colored terminal output with timing
 - **Custom subdomains** - `xpo share 3000 -s myapp`
@@ -121,16 +123,18 @@ $ xpo dev 3000 -n myapp
 ## Commands
 
 ```bash
-xpo login                   # authenticate with GitHub or Google
-xpo share <port>            # public HTTPS tunnel
-xpo share <port> -s <name>  # custom subdomain
-xpo dev <port> -n <name>    # local HTTPS proxy (auto-setup on first use)
-xpo dev setup               # manual setup (CA, trust, port forwarding)
-xpo dev stop                # clean up /etc/hosts entries
-xpo dev uninstall           # remove CA, trust, and port forwarding
-xpo doctor                  # diagnose setup issues
-xpo status                  # show session info
-xpo logout                  # clear session
+xpo login                        # authenticate with GitHub or Google
+xpo share <port>                 # public HTTPS tunnel
+xpo share <port> -s <name>       # custom subdomain
+xpo share <port> --cors          # inject CORS headers + handle preflight
+xpo dev <port> -n <name>         # local HTTPS proxy (auto-setup on first use)
+xpo dev setup                    # manual setup (CA, trust, port forwarding)
+xpo dev stop                     # clean up /etc/hosts entries
+xpo dev uninstall                # remove CA, trust, and port forwarding
+xpo doctor                       # diagnose setup issues
+xpo update                       # self-update to latest version
+xpo status                       # show session info
+xpo logout                       # clear session
 ```
 
 ## Platform support
