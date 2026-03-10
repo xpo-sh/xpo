@@ -54,23 +54,23 @@ cargo install xpo
 
 Expose any local port to the internet with a single command:
 
-```bash
+```
 $ xpo login
   ✓ Logged in as you@email.com
 
 $ xpo share 3000 -s myapp
-╭─ xpo share ──────────────────────────────────╮
-│ https://myapp.xpo.sh -> localhost:3000       │
-│ 42 requests  5ms avg  98% ok                 │
-│ ● Connected                                  │
-│ you@email.com                                │
-╰──────────────────────────────────────────────╯
-╭─ QR ──╮╭─ Requests ──────────────────────────╮
-│ ▄██▀▄ ││ TIME      METHOD  PATH       STATUS │
-│ █▄▀▄█ ││ 16:25:04  GET     /          200    │
-│ ▀██▄▀ ││ 16:25:04  GET     /_nuxt/    304    │
-╰───────╯│ 16:25:05  POST    /api/data  200    │
-         ╰─────────────────────────────────────╯
+┌─ xpo share ─────────────────────────────────┐
+│ https://myapp.xpo.sh -> localhost:3000      │
+│ 42 requests  5ms avg  98% ok               │
+│ ● Connected                                │
+│ you@email.com                              │
+└─────────────────────────────────────────────┘
+┌─ Requests ──────────────────────────────────┐
+│ TIME      METHOD  PATH        STATUS        │
+│ 16:25:04  GET     /           200 (3ms)     │
+│ 16:25:04  GET     /_nuxt/     304 (2ms)     │
+│ 16:25:05  POST    /api/data   200 (1ms)     │
+└─────────────────────────────────────────────┘
 q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
 
@@ -78,19 +78,19 @@ q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 
 Real HTTPS on localhost with `.test` domains. No browser warnings, WebSocket/HMR works out of the box. Setup runs automatically on first use:
 
-```bash
+```
 $ xpo dev 3000 -n myapp
-╭─ xpo dev ────────────────────────────────────╮
-│ https://myapp.test -> localhost:3000          │
-│ 12 requests  3ms avg  100% ok                │
-│ ● Connected                                  │
-╰──────────────────────────────────────────────╯
-╭─ Requests ───────────────────────────────────╮
-│ TIME      METHOD  PATH            STATUS     │
-│ 16:25:04  GET     /               200 (3ms)  │
-│ 16:25:04  GET     /_nuxt/entry    304 (2ms)  │
-│ 16:25:05  GET     /api/health     200 (1ms)  │
-╰──────────────────────────────────────────────╯
+┌─ xpo dev ───────────────────────────────────┐
+│ https://myapp.test -> localhost:3000        │
+│ 12 requests  3ms avg  100% ok              │
+│ ● Connected                                │
+└─────────────────────────────────────────────┘
+┌─ Requests ──────────────────────────────────┐
+│ TIME      METHOD  PATH           STATUS     │
+│ 16:25:04  GET     /              200 (3ms)  │
+│ 16:25:04  GET     /_nuxt/entry   304 (2ms)  │
+│ 16:25:05  GET     /api/health    200 (1ms)  │
+└─────────────────────────────────────────────┘
 q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
 
@@ -108,16 +108,16 @@ q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 
 ## Features
 
-- **HTTPS tunnels** -Let's Encrypt wildcard TLS, zero config
-- **WebSocket relay** -HMR/hot-reload works through tunnel
-- **Local HTTPS** -trusted `.test` domains for development
-- **Auto-reconnect** -exponential backoff on connection loss
-- **Interactive TUI** -Ratatui-powered dashboard with QR code, request log, filtering
-- **Request logging** -colored terminal output with timing
-- **Custom subdomains** -`xpo share 3000 -s myapp`
-- **GitHub/Google auth** -OAuth login, no email/password
-- **Fast** -Rust + tokio, sub-millisecond proxy overhead
-- **Open source** -MIT licensed
+- **HTTPS tunnels** - Let's Encrypt wildcard TLS, zero config
+- **WebSocket relay** - HMR/hot-reload works through tunnel
+- **Local HTTPS** - trusted `.test` domains for development
+- **Auto-reconnect** - exponential backoff on connection loss
+- **Interactive TUI** - Ratatui-powered dashboard with QR code, request log, filtering
+- **Request logging** - colored terminal output with timing
+- **Custom subdomains** - `xpo share 3000 -s myapp`
+- **GitHub/Google auth** - OAuth login, no email/password
+- **Fast** - Rust + tokio, sub-millisecond proxy overhead
+- **Open source** - MIT licensed
 
 ## Commands
 
@@ -140,7 +140,7 @@ xpo logout                  # clear session
 |---|---|---|
 | macOS (ARM + Intel) | ✅ Full | ✅ Full |
 | Linux (x86_64 + ARM) | ✅ Full | ✅ Full |
-| Windows | -| ✅ Full |
+| Windows | - | ✅ Full |
 
 ## Contributing
 
