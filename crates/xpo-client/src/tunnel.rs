@@ -246,9 +246,10 @@ async fn proxy_to_upstream(
     };
 
     let request_bytes = if is_ws_upgrade {
-        raw_request.to_vec()
+        rewrite_host_header(raw_request, port)
     } else {
-        inject_connection_close(raw_request)
+        let rewritten = rewrite_host_header(raw_request, port);
+        inject_connection_close(&rewritten)
     };
 
     if upstream.write_all(&request_bytes).await.is_err() {
@@ -293,6 +294,49 @@ async fn proxy_to_upstream(
         response,
         ws_relay: None,
     }
+}
+
+fn rewrite_host_header(raw: &[u8], port: u16) -> Vec<u8> {
+    let header_end = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(pos) => pos,
+        None => return raw.to_vec(),
+    };
+
+    let header_bytes = &raw[..header_end];
+    let body_bytes = &raw[header_end + 4..];
+    let header_str = String::from_utf8_lossy(header_bytes);
+
+    let first_crlf = match header_str.find("\r\n") {
+        Some(pos) => pos,
+        None => return raw.to_vec(),
+    };
+
+    let mut original_host = None;
+    let mut patched = Vec::with_capacity(raw.len() + 64);
+    patched.extend_from_slice(&header_bytes[..first_crlf + 2]);
+
+    for line in header_str[first_crlf + 2..].split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        if line.to_ascii_lowercase().starts_with("host:") {
+            if let Some((_, val)) = line.split_once(':') {
+                original_host = Some(val.trim().to_string());
+            }
+            patched.extend_from_slice(format!("Host: localhost:{port}\r\n").as_bytes());
+        } else {
+            patched.extend_from_slice(line.as_bytes());
+            patched.extend_from_slice(b"\r\n");
+        }
+    }
+
+    if let Some(orig) = original_host {
+        patched.extend_from_slice(format!("X-Forwarded-Host: {orig}\r\n").as_bytes());
+    }
+
+    patched.extend_from_slice(b"\r\n");
+    patched.extend_from_slice(body_bytes);
+    patched
 }
 
 fn inject_connection_close(raw: &[u8]) -> Vec<u8> {
@@ -551,6 +595,40 @@ mod tests {
         let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let actual_body = &patched[header_end + 4..];
         assert!(actual_body.is_empty(), "empty body must stay empty");
+    }
+
+    #[test]
+    fn rewrite_host_header_replaces_host() {
+        let raw = b"GET / HTTP/1.1\r\nHost: myapp.xpo.sh\r\nAccept: */*\r\n\r\n";
+        let patched = rewrite_host_header(raw, 5173);
+        let s = String::from_utf8_lossy(&patched);
+        assert!(s.contains("Host: localhost:5173"), "Host must be rewritten");
+        assert!(
+            s.contains("X-Forwarded-Host: myapp.xpo.sh"),
+            "original host must be in X-Forwarded-Host"
+        );
+        assert!(s.contains("Accept: */*"), "other headers preserved");
+    }
+
+    #[test]
+    fn rewrite_host_header_preserves_body() {
+        let body = b"hello world";
+        let mut raw =
+            b"POST /api HTTP/1.1\r\nHost: test.xpo.sh\r\nContent-Length: 11\r\n\r\n".to_vec();
+        raw.extend_from_slice(body);
+        let patched = rewrite_host_header(&raw, 3000);
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let actual_body = &patched[header_end + 4..];
+        assert_eq!(actual_body, body);
+    }
+
+    #[test]
+    fn rewrite_host_header_no_host() {
+        let raw = b"GET / HTTP/1.1\r\nAccept: */*\r\n\r\n";
+        let patched = rewrite_host_header(raw, 3000);
+        let s = String::from_utf8_lossy(&patched);
+        assert!(!s.contains("X-Forwarded-Host"));
+        assert!(s.contains("Accept: */*"));
     }
 
     #[test]
