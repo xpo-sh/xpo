@@ -20,7 +20,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
             let server = std::env::var("XPO_API_SERVER")
                 .unwrap_or_else(|_| format!("https://{}", config.defaults.server));
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(2))
                 .build()
                 .unwrap_or_default();
             if let Ok(resp) = client
