@@ -59,19 +59,18 @@ $ xpo login
   ✓ Logged in as you@email.com
 
 $ xpo share 3000 -s myapp
-┌─ xpo share ─────────────────────────────────┐
-│ https://myapp.xpo.sh -> localhost:3000      │
-│ 42 requests  5ms avg  98% ok               │
-│ ● Connected                                │
-│ you@email.com                              │
-└─────────────────────────────────────────────┘
-┌─ Requests ──────────────────────────────────┐
-│ TIME      METHOD  PATH        STATUS        │
-│ 16:25:04  GET     /           200 (3ms)     │
-│ 16:25:04  GET     /_nuxt/     304 (2ms)     │
-│ 16:25:05  POST    /api/data   200 (1ms)     │
-└─────────────────────────────────────────────┘
-q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
+
+  xpo share
+  https://myapp.xpo.sh -> localhost:3000
+  42 requests  5ms avg  98% ok
+  ● Connected  you@email.com
+
+  TIME      METHOD  PATH        STATUS
+  16:25:04  GET     /           200 (3ms)
+  16:25:04  GET     /_nuxt/     304 (2ms)
+  16:25:05  POST    /api/data   200 (1ms)
+
+  q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
 
 ## Local HTTPS
@@ -80,18 +79,18 @@ Real HTTPS on localhost with `.test` domains. No browser warnings, WebSocket/HMR
 
 ```
 $ xpo dev 3000 -n myapp
-┌─ xpo dev ───────────────────────────────────┐
-│ https://myapp.test -> localhost:3000        │
-│ 12 requests  3ms avg  100% ok              │
-│ ● Connected                                │
-└─────────────────────────────────────────────┘
-┌─ Requests ──────────────────────────────────┐
-│ TIME      METHOD  PATH           STATUS     │
-│ 16:25:04  GET     /              200 (3ms)  │
-│ 16:25:04  GET     /_nuxt/entry   304 (2ms)  │
-│ 16:25:05  GET     /api/health    200 (1ms)  │
-└─────────────────────────────────────────────┘
-q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
+
+  xpo dev
+  https://myapp.test -> localhost:3000
+  12 requests  3ms avg  100% ok
+  ● Connected
+
+  TIME      METHOD  PATH           STATUS
+  16:25:04  GET     /              200 (3ms)
+  16:25:04  GET     /_nuxt/entry   304 (2ms)
+  16:25:05  GET     /api/health    200 (1ms)
+
+  q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
 
 ## Why xpo?
