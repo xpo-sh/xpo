@@ -80,6 +80,7 @@ impl TuiApp {
             AppEvent::Resize(_, _) => {}
             AppEvent::Request(req) => self.state.push_request(req),
             AppEvent::Connection(status) => self.state.conn_status = status,
+            AppEvent::PfStatus(_active) => {}
         }
     }
 

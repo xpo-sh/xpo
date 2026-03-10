@@ -12,6 +12,7 @@ pub enum AppEvent {
     Resize(u16, u16),
     Request(RequestLog),
     Connection(ConnStatus),
+    PfStatus(bool),
 }
 
 pub struct EventHandler {

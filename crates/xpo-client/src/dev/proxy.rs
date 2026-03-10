@@ -83,6 +83,22 @@ pub async fn run(
         }
     });
 
+    #[cfg(target_os = "macos")]
+    {
+        if !crate::dev::setup::verify_pf_runtime_state() {
+            eprintln!(
+                "  {} Port forwarding rules not active, reloading...",
+                style("\u{2192}").dim()
+            );
+            if crate::dev::setup::auto_reload_pf().is_err() {
+                eprintln!(
+                    "  {} Could not reload pfctl rules. Run: sudo pfctl -ef /etc/pf.conf",
+                    style("\u{2717}").red().bold()
+                );
+            }
+        }
+    }
+
     let use_tui = TuiApp::check_terminal_size();
     let (app_tx, events) = TuiApp::create_channel();
     let quit_flag = Arc::new(AtomicBool::new(false));
@@ -129,6 +145,8 @@ pub async fn run(
         legacy_print_banner(&domain, port);
         None
     };
+
+    spawn_pf_health_check(quit_flag.clone(), app_tx.clone());
 
     let domain_clone = domain.clone();
     let quit_notify = Arc::new(tokio::sync::Notify::new());
@@ -181,6 +199,34 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_pf_health_check(quit_flag: Arc<AtomicBool>, event_tx: std::sync::mpsc::Sender<AppEvent>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if quit_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            let active = crate::dev::setup::verify_pf_runtime_state();
+            let _ = event_tx.send(AppEvent::PfStatus(active));
+            if !active {
+                let _ = crate::dev::setup::auto_reload_pf();
+                let reloaded = crate::dev::setup::verify_pf_runtime_state();
+                let _ = event_tx.send(AppEvent::PfStatus(reloaded));
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_pf_health_check(
+    _quit_flag: Arc<AtomicBool>,
+    _event_tx: std::sync::mpsc::Sender<AppEvent>,
+) {
 }
 
 fn legacy_print_banner(domain: &str, port: u16) {
