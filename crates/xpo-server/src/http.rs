@@ -5,15 +5,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use xpo_core::error_page::ErrorPage;
 use xpo_core::StreamId;
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
 
 pub async fn handle_http(
     req: Request<hyper::body::Incoming>,
@@ -167,11 +160,12 @@ async fn handle_ws_upgrade(
     tracing::debug!(subdomain = %subdomain, "ws upgrade");
 
     let (from_client_tx, mut from_client_rx) = tokio::sync::mpsc::unbounded_channel();
-    state.streams.insert(
+    state.add_stream(
         stream_id,
+        &subdomain,
         ActiveStream {
             from_client_tx,
-            tunnel_subdomain: subdomain,
+            tunnel_subdomain: subdomain.clone(),
         },
     );
 
@@ -181,7 +175,7 @@ async fn handle_ws_upgrade(
         let upgraded = match hyper::upgrade::on(req).await {
             Ok(u) => u,
             Err(_) => {
-                state_clone.streams.remove(&stream_id);
+                state_clone.remove_stream(&stream_id);
                 return;
             }
         };
@@ -218,7 +212,7 @@ async fn handle_ws_upgrade(
         }
 
         let _ = tunnel_tx.try_send(TunnelMessage::StreamEnd { stream_id });
-        state_clone.streams.remove(&stream_id);
+        state_clone.remove_stream(&stream_id);
     });
 
     let mut resp = Response::new(Full::new(Bytes::new()));
@@ -369,47 +363,9 @@ fn parse_response(raw: &[u8]) -> Response<Full<Bytes>> {
 }
 
 fn text_response(status: StatusCode, message: &str, hint: &str) -> Response<Full<Bytes>> {
-    let code = status.as_u16();
-    let safe_message = html_escape(message);
-    let hint_html = if hint.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"hint\">{}</p>", html_escape(hint))
-    };
-    let html = format!(
-        "<!DOCTYPE html>\
-        <html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-        <title>{code} - xpo.sh</title>\
-        <style>\
-        *{{margin:0;padding:0;box-sizing:border-box}}\
-        body{{font-family:'SF Mono','JetBrains Mono','Fira Code',Menlo,Consolas,monospace;\
-        display:flex;align-items:center;justify-content:center;height:100vh;\
-        background:#0a0a0f;color:#e2e2e8}}\
-        .c{{text-align:center}}\
-        .code{{font-size:96px;font-weight:800;line-height:1;color:#1e1e2e}}\
-        .msg{{margin:16px 0 0;font-size:15px}}\
-        .hint{{color:#555570;font-size:13px;margin:8px 0 0}}\
-        a{{color:#22d3ee;text-decoration:none}}\
-        a:hover{{text-decoration:underline}}\
-        .brand{{position:fixed;bottom:24px;color:#555570;font-size:12px}}\
-        .brand span{{color:#22d3ee;font-weight:600}}\
-        @media(prefers-color-scheme:light){{\
-        body{{background:#f5f6f8;color:#111827}}\
-        .code{{color:#e2e4e9}}\
-        .hint{{color:#6b7280}}\
-        a{{color:#0891b2}}\
-        .brand{{color:#6b7280}}\
-        .brand span{{color:#0891b2}}\
-        }}\
-        </style></head>\
-        <body><div class=\"c\">\
-        <p class=\"code\">{code}</p>\
-        <p class=\"msg\">{safe_message}</p>\
-        {hint_html}\
-        </div>\
-        <div class=\"brand\"><span>xpo</span>.sh</div>\
-        </body></html>"
-    );
+    let html = ErrorPage::new(status.as_u16(), message)
+        .hint(hint)
+        .render_html();
     Response::builder()
         .status(status)
         .header("content-type", "text/html; charset=utf-8")
@@ -462,30 +418,15 @@ mod tests {
     }
 
     #[test]
-    fn html_escape_special_chars() {
-        assert_eq!(
-            html_escape("<script>alert(1)</script>"),
-            "&lt;script&gt;alert(1)&lt;/script&gt;"
-        );
-        assert_eq!(html_escape("a&b\"c'd"), "a&amp;b&quot;c&#x27;d");
-    }
-
-    #[test]
     fn text_response_escapes_xss_in_body() {
-        let xss = "<script>alert(1)</script>.xpo.sh is not connected";
-        let escaped = html_escape(xss);
+        let html =
+            ErrorPage::new(404, "<script>alert(1)</script>.xpo.sh is not connected").render_html();
         assert!(
-            !escaped.contains("<script>"),
-            "escaped output must not contain raw <script>"
+            !html.contains("<script>"),
+            "rendered HTML must not contain raw <script>"
         );
-        assert!(escaped.contains("&lt;script&gt;"));
-        assert!(escaped.contains(".xpo.sh is not connected"));
-    }
-
-    #[test]
-    fn html_escape_noop_on_clean_text() {
-        let clean = "normal-sub.xpo.sh is not connected";
-        assert_eq!(html_escape(clean), clean);
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains(".xpo.sh is not connected"));
     }
 
     #[test]

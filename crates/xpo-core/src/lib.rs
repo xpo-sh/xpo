@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod error_page;
 pub mod protocol;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
