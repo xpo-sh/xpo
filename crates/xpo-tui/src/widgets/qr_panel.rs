@@ -2,7 +2,7 @@ use fast_qr::qr::QRBuilder;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 
 use crate::theme::Theme;
@@ -12,7 +12,8 @@ pub fn render(frame: &mut Frame, area: Rect, url: &str) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Theme::border())
-        .title(Span::styled("QR", Theme::accent_bold()));
+        .title(Span::styled("QR", Theme::accent_bold()))
+        .padding(Padding::horizontal(1));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -57,7 +58,7 @@ pub fn render(frame: &mut Frame, area: Rect, url: &str) {
 
 pub fn required_width(url: &str) -> u16 {
     match QRBuilder::new(url).build() {
-        Ok(qr) => qr.size as u16 + 2,
+        Ok(qr) => qr.size as u16 + 4,
         Err(_) => 0,
     }
 }

@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Row, Table};
 use ratatui::Frame;
 use time::macros::format_description;
 
@@ -13,7 +13,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Theme::border())
-        .title(Span::styled("Requests", Theme::accent_bold()));
+        .title(Span::styled("Requests", Theme::accent_bold()))
+        .padding(Padding::horizontal(1));
 
     let visible = state.visible_requests();
 

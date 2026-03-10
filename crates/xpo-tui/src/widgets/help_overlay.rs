@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use ratatui::Frame;
 
 use crate::theme::Theme;
@@ -14,7 +14,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Theme::border())
-        .title(Span::styled("Keybindings", Theme::accent_bold()));
+        .title(Span::styled("Keybindings", Theme::accent_bold()))
+        .padding(Padding::horizontal(1));
 
     let bindings = vec![
         ("q / Ctrl+C", "Quit"),
