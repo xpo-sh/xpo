@@ -15,11 +15,14 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut json_entries = Vec::new();
 
     let config = xpo_core::config::Config::load().unwrap_or_default();
-    if config.is_authenticated() && !config.is_expired() {
-        if let Ok(token) = crate::auth::get_token().await {
+    if config.is_authenticated() {
+        if let Some(token) = config.auth.access_token.as_deref() {
             let server = std::env::var("XPO_API_SERVER")
-                .unwrap_or_else(|_| "https://api.xpo.sh".to_string());
-            let client = reqwest::Client::new();
+                .unwrap_or_else(|_| format!("https://{}", config.defaults.server));
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default();
             if let Ok(resp) = client
                 .get(format!("{}/api/tunnels", server))
                 .header("Authorization", format!("Bearer {}", token))
@@ -69,6 +72,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    drop(config);
 
     let hosts_content = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
     let test_domains = parse_test_domains(&hosts_content);
