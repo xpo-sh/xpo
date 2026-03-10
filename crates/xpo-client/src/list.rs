@@ -19,16 +19,22 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(token) = config.auth.access_token.as_deref() {
             let server = std::env::var("XPO_API_SERVER")
                 .unwrap_or_else(|_| format!("https://{}", config.defaults.server));
+            if !json {
+                eprint!("\x1b[38;2;139;148;158m  Fetching tunnels...\x1b[0m");
+            }
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
                 .build()
                 .unwrap_or_default();
-            if let Ok(resp) = client
+            let api_result = client
                 .get(format!("{}/api/tunnels", server))
                 .header("Authorization", format!("Bearer {}", token))
                 .send()
-                .await
-            {
+                .await;
+            if !json {
+                eprint!("\r\x1b[2K");
+            }
+            if let Ok(resp) = api_result {
                 if let Ok(tunnels) = resp.json::<Vec<serde_json::Value>>().await {
                     for t in tunnels {
                         let subdomain = t["subdomain"].as_str().unwrap_or("?");
