@@ -29,7 +29,8 @@ pub fn render(frame: &mut Frame, area: Rect, url: &str) {
     let mut lines: Vec<Line> = Vec::new();
 
     let mut y = 0;
-    while y < size {
+    let end = size;
+    while y < end {
         let mut spans: Vec<Span> = Vec::new();
         for x in 0..size {
             let top = qr[y][x].value();
@@ -50,8 +51,6 @@ pub fn render(frame: &mut Frame, area: Rect, url: &str) {
         y += 2;
     }
 
-    lines.push(Line::from(Span::styled("Scan URL", Theme::text_dim())));
-
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 }
@@ -59,6 +58,13 @@ pub fn render(frame: &mut Frame, area: Rect, url: &str) {
 pub fn required_width(url: &str) -> u16 {
     match QRBuilder::new(url).build() {
         Ok(qr) => qr.size as u16 + 2,
+        Err(_) => 0,
+    }
+}
+
+pub fn required_height(url: &str) -> u16 {
+    match QRBuilder::new(url).build() {
+        Ok(qr) => (qr.size as u16).div_ceil(2) + 2,
         Err(_) => 0,
     }
 }

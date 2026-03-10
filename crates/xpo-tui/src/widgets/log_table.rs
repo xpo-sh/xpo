@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Cell, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
 use ratatui::Frame;
 use time::macros::format_description;
 
@@ -9,6 +9,12 @@ use crate::model::TuiState;
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Theme::border())
+        .title(Span::styled("Requests", Theme::accent_bold()));
+
     let visible = state.visible_requests();
 
     let header = Row::new(vec![
@@ -58,7 +64,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState) {
         Constraint::Length(14),
     ];
 
-    let table = Table::new(rows, widths).header(header).column_spacing(1);
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(1)
+        .block(block);
 
     frame.render_widget(table, area);
 }

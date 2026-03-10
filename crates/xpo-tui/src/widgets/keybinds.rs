@@ -11,7 +11,6 @@ pub fn render(
     area: Rect,
     view_mode: &ViewMode,
     filter_text: &str,
-    has_qr: bool,
     scroll_info: Option<(usize, usize, usize)>,
 ) {
     let line = match view_mode {
@@ -25,13 +24,9 @@ pub fn render(
                 Span::styled(":filter  ", Theme::text_dim()),
                 Span::styled("x", Theme::accent_bold()),
                 Span::styled(":clear  ", Theme::text_dim()),
+                Span::styled("?", Theme::accent_bold()),
+                Span::styled(":help", Theme::text_dim()),
             ];
-            if has_qr {
-                spans.push(Span::styled("r", Theme::accent_bold()));
-                spans.push(Span::styled(":qr  ", Theme::text_dim()));
-            }
-            spans.push(Span::styled("?", Theme::accent_bold()));
-            spans.push(Span::styled(":help", Theme::text_dim()));
             if let Some((selected, _offset, total)) = scroll_info {
                 if total > 0 {
                     spans.push(Span::styled(

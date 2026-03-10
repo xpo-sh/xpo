@@ -101,11 +101,6 @@ impl TuiApp {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('f') => self.state.view_mode = ViewMode::Filter,
             KeyCode::Char('x') => self.state.clear(),
-            KeyCode::Char('r') => {
-                if self.banner.has_qr {
-                    self.state.show_qr = !self.state.show_qr;
-                }
-            }
             KeyCode::Char('?') => self.state.view_mode = ViewMode::Help,
             KeyCode::Up | KeyCode::Char('k') => self.state.select_up(),
             KeyCode::Down | KeyCode::Char('j') => self.state.select_down(),

@@ -6,7 +6,7 @@ use ratatui::Frame;
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, area: Rect) {
-    let overlay = centered_rect(50, 14, area);
+    let overlay = centered_rect(50, 11, area);
 
     frame.render_widget(Clear, overlay);
 
@@ -20,8 +20,6 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ("q / Ctrl+C", "Quit"),
         ("f", "Filter requests"),
         ("x", "Clear log"),
-        ("d / Enter", "Request detail"),
-        ("r", "Toggle QR code"),
         ("\u{2191}\u{2193} / jk", "Scroll"),
         ("ESC", "Back / Close"),
         ("?", "This help"),

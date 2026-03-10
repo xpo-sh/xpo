@@ -20,6 +20,7 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let use_tui = TuiApp::check_terminal_size();
     let quit_flag = Arc::new(AtomicBool::new(false));
+    let quit_notify = Arc::new(tokio::sync::Notify::new());
 
     let (app_tx, events) = TuiApp::create_channel();
 
@@ -27,6 +28,18 @@ pub async fn run(
         events: Some(events),
         handle: None,
     }));
+
+    let qf_check = quit_flag.clone();
+    let quit_notify2 = quit_notify.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if qf_check.load(Ordering::Relaxed) {
+                quit_notify2.notify_one();
+                break;
+            }
+        }
+    });
 
     let mut backoff = RECONNECT_MIN_SECS;
     let mut first_connect = true;
@@ -39,6 +52,7 @@ pub async fn run(
             cors,
             &app_tx,
             &quit_flag,
+            &quit_notify,
             use_tui,
             first_connect,
             &tui_state,
@@ -107,6 +121,7 @@ async fn connect_and_run(
     cors: bool,
     app_tx: &std::sync::mpsc::Sender<AppEvent>,
     quit_flag: &Arc<AtomicBool>,
+    quit_notify: &Arc<tokio::sync::Notify>,
     use_tui: bool,
     first_connect: bool,
     tui_state: &Arc<std::sync::Mutex<TuiThreadState>>,
@@ -196,6 +211,9 @@ async fn connect_and_run(
         }
 
         tokio::select! {
+            _ = quit_notify.notified() => {
+                return Ok(());
+            }
             msg = tokio::time::timeout(
                 std::time::Duration::from_secs(HEARTBEAT_TIMEOUT_SECS),
                 ws_read.next(),

@@ -9,24 +9,69 @@ pub fn draw(frame: &mut Frame, app: &TuiApp) {
     let area = frame.area();
 
     let banner_height = 5 + app.banner.extra_lines.len() as u16;
-    let log_height = app.state.visible_rows as u16 + 1;
+    let log_height = app.state.visible_rows as u16 + 3;
 
-    let main_layout = Layout::default()
+    let has_qr = app.banner.has_qr;
+    let qr_url;
+    let qr_width;
+    let qr_height;
+
+    if has_qr {
+        qr_url = app
+            .banner
+            .qr_url
+            .as_deref()
+            .unwrap_or(&app.banner.url)
+            .to_string();
+        let w = qr_panel::required_width(&qr_url);
+        let h = qr_panel::required_height(&qr_url);
+        if w > 0 && area.width > w + 40 {
+            qr_width = w;
+            qr_height = h;
+        } else {
+            qr_width = 0;
+            qr_height = 0;
+        }
+    } else {
+        qr_url = String::new();
+        qr_width = 0;
+        qr_height = 0;
+    }
+
+    let content_height = if qr_width > 0 {
+        log_height.max(qr_height)
+    } else {
+        log_height
+    };
+
+    let vert_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(banner_height),
-            Constraint::Length(log_height),
+            Constraint::Length(content_height),
             Constraint::Length(1),
             Constraint::Fill(1),
         ])
         .split(area);
 
-    let banner_area = main_layout[0];
-    let log_area = main_layout[1];
-    let footer_area = main_layout[2];
+    let banner_area = vert_layout[0];
+    let content_area = vert_layout[1];
+    let footer_area = vert_layout[2];
 
-    render_banner(frame, banner_area, app);
-    log_table::render(frame, log_area, &app.state);
+    banner::render(frame, banner_area, &app.banner, &app.state);
+
+    if qr_width > 0 {
+        let h_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(qr_width), Constraint::Fill(1)])
+            .split(content_area);
+
+        qr_panel::render(frame, h_layout[0], &qr_url);
+        log_table::render(frame, h_layout[1], &app.state);
+    } else {
+        log_table::render(frame, content_area, &app.state);
+    }
+
     render_footer(frame, footer_area, app);
 
     if app.state.view_mode == ViewMode::Help {
@@ -34,30 +79,7 @@ pub fn draw(frame: &mut Frame, app: &TuiApp) {
     }
 }
 
-fn render_banner(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let show_qr = app.state.show_qr && app.banner.has_qr;
-
-    if show_qr {
-        let qr_url = app.banner.qr_url.as_deref().unwrap_or(&app.banner.url);
-        let qr_width = qr_panel::required_width(qr_url);
-
-        if qr_width > 0 && area.width > qr_width + 20 {
-            let layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Fill(1), Constraint::Length(qr_width)])
-                .split(area);
-
-            banner::render(frame, layout[0], &app.banner, &app.state);
-            qr_panel::render(frame, layout[1], qr_url);
-            return;
-        }
-    }
-
-    banner::render(frame, area, &app.banner, &app.state);
-}
-
 fn render_footer(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let has_qr = app.banner.has_qr;
     let total = app.state.filtered_requests().len();
     let scroll_info = if total > 0 {
         Some((app.state.selected, app.state.scroll_offset, total))
@@ -69,7 +91,6 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &TuiApp) {
         area,
         &app.state.view_mode,
         &app.state.filter_text,
-        has_qr,
         scroll_info,
     );
 }
