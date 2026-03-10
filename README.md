@@ -107,18 +107,18 @@ $ xpo dev 3000 -n myapp
 
 ## Features
 
-- **HTTPS tunnels** - Let's Encrypt wildcard TLS, zero config
-- **WebSocket relay** - HMR/hot-reload works through tunnel
-- **Local HTTPS** - trusted `.test` domains with auto-renewing certs
-- **CORS injection** - `--cors` flag adds permissive CORS headers, handles preflight
-- **Auto-reconnect** - exponential backoff on connection loss
-- **Self-update** - `xpo update` to get the latest version
-- **Interactive TUI** - Ratatui-powered dashboard with QR code, request log, filtering
-- **Request logging** - colored terminal output with timing
-- **Custom subdomains** - `xpo share 3000 -s myapp`
-- **GitHub/Google auth** - OAuth login, no email/password
-- **Fast** - Rust + tokio, sub-millisecond proxy overhead
-- **Open source** - MIT licensed
+- 🔒 **HTTPS tunnels** - Let's Encrypt wildcard TLS, zero config
+- ⚡ **WebSocket relay** - HMR/hot-reload works through tunnel
+- 🏠 **Local HTTPS** - trusted `.test` domains with auto-renewing certs
+- 🌍 **CORS injection** - `--cors` flag adds permissive CORS headers, handles preflight
+- 🔄 **Auto-reconnect** - exponential backoff on connection loss
+- 📦 **Self-update** - `xpo update` to get the latest version
+- 🖥️ **Interactive TUI** - Ratatui-powered dashboard with QR code, request log, filtering
+- 📊 **Request logging** - colored terminal output with timing
+- 🏷️ **Custom subdomains** - `xpo share 3000 -s myapp`
+- 🔑 **GitHub/Google auth** - OAuth login, no email/password
+- 🚀 **Fast** - Rust + tokio, sub-millisecond proxy overhead
+- 💚 **Open source** - MIT licensed
 
 ## Commands
 
