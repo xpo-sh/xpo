@@ -3732,7 +3732,7 @@ dependencies = [
 
 [[package]]
 name = "xpo"
-version = "0.2.18-alpha"
+version = "0.2.19-alpha"
 dependencies = [
  "base64",
  "clap",
@@ -3763,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "xpo-core"
-version = "0.2.18-alpha"
+version = "0.2.19-alpha"
 dependencies = [
  "jsonwebtoken",
  "serde",
@@ -3775,7 +3775,7 @@ dependencies = [
 
 [[package]]
 name = "xpo-server"
-version = "0.2.18-alpha"
+version = "0.2.19-alpha"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -3801,7 +3801,7 @@ dependencies = [
 
 [[package]]
 name = "xpo-tui"
-version = "0.2.18-alpha"
+version = "0.2.19-alpha"
 dependencies = [
  "crossterm",
  "fast_qr",
