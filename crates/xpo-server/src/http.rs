@@ -28,8 +28,8 @@ pub async fn handle_http(
         return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found", ""));
     }
 
-    let tunnel_tx = match state.tunnels.get(&subdomain) {
-        Some(t) => t.tx.clone(),
+    let (tunnel_tx, tunnel_password) = match state.tunnels.get(&subdomain) {
+        Some(t) => (t.tx.clone(), t.password.clone()),
         None => {
             return Ok(text_response(
                 StatusCode::NOT_FOUND,
@@ -38,6 +38,27 @@ pub async fn handle_http(
             ));
         }
     };
+
+    if let Some(ref password) = tunnel_password {
+        let authorized = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| verify_basic_auth(v, password))
+            .unwrap_or(false);
+        if !authorized {
+            return Ok(Response::builder()
+                .status(401)
+                .header("WWW-Authenticate", "Basic realm=\"xpo\"")
+                .header("content-type", "text/html; charset=utf-8")
+                .body(Full::new(Bytes::from(
+                    ErrorPage::new(401, "Authentication Required")
+                        .hint("This tunnel is password-protected")
+                        .render_html(),
+                )))
+                .unwrap());
+        }
+    }
 
     let is_ws = req
         .headers()
@@ -233,6 +254,19 @@ async fn handle_ws_upgrade(
     }
 
     Ok(resp)
+}
+
+fn verify_basic_auth(header_value: &str, expected_password: &str) -> bool {
+    use base64::Engine;
+    let encoded = header_value.strip_prefix("Basic ").unwrap_or("");
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+        if let Ok(credentials) = String::from_utf8(decoded) {
+            if let Some((_user, pass)) = credentials.split_once(':') {
+                return pass == expected_password;
+            }
+        }
+    }
+    false
 }
 
 fn extract_subdomain(host: &str, base_domain: &str) -> String {
@@ -445,5 +479,33 @@ mod tests {
     fn parse_response_empty() {
         let resp = parse_response(b"");
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn verify_basic_auth_valid() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:secret123");
+        let header = format!("Basic {encoded}");
+        assert!(verify_basic_auth(&header, "secret123"));
+    }
+
+    #[test]
+    fn verify_basic_auth_invalid() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:wrongpass");
+        let header = format!("Basic {encoded}");
+        assert!(!verify_basic_auth(&header, "secret123"));
+    }
+
+    #[test]
+    fn verify_basic_auth_any_username() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("anyuser:mypass");
+        let header = format!("Basic {encoded}");
+        assert!(verify_basic_auth(&header, "mypass"));
+
+        let encoded2 = base64::engine::general_purpose::STANDARD.encode(":mypass");
+        let header2 = format!("Basic {encoded2}");
+        assert!(verify_basic_auth(&header2, "mypass"));
     }
 }
