@@ -30,7 +30,7 @@ enum Commands {
         domain: Option<String>,
         #[arg(long, default_value = "500")]
         log_max: usize,
-        #[arg(long, default_value = "10")]
+        #[arg(long, default_value = "14")]
         log_visible: usize,
         #[arg(long)]
         cors: bool,
