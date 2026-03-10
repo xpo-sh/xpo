@@ -121,7 +121,12 @@ where
         };
 
     let subdomain = match ClientControl::from_json(&hello_msg) {
-        Ok(ClientControl::Hello { subdomain, .. }) => {
+        Ok(ClientControl::Hello {
+            subdomain,
+            password: _,
+            ttl_secs: _,
+            ..
+        }) => {
             let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
             if !is_valid_subdomain(&sub) {
                 let resp = ServerControl::Error {

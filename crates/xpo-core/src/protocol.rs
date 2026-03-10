@@ -47,6 +47,8 @@ pub enum ClientControl {
     Hello {
         port: u16,
         subdomain: Option<String>,
+        password: Option<String>,
+        ttl_secs: Option<u64>,
     },
 }
 
@@ -202,6 +204,8 @@ mod tests {
         let msg = ClientControl::Hello {
             port: 3000,
             subdomain: Some("myapp".into()),
+            password: None,
+            ttl_secs: None,
         };
         let json = msg.to_json().unwrap();
         assert!(json.contains("\"type\":\"Hello\""));
@@ -299,6 +303,62 @@ mod tests {
         let encoded = pkt.encode();
         assert_eq!(encoded.len(), PACKET_HEADER_SIZE + 64 * 1024);
         assert_eq!(Packet::decode(&encoded).unwrap().payload, payload);
+    }
+
+    #[test]
+    fn client_control_hello_with_password() {
+        let hello = ClientControl::Hello {
+            port: 3000,
+            subdomain: Some("myapp".to_string()),
+            password: Some("secret123".to_string()),
+            ttl_secs: None,
+        };
+        let json = hello.to_json().unwrap();
+        let parsed = ClientControl::from_json(&json).unwrap();
+        match parsed {
+            ClientControl::Hello { password, .. } => {
+                assert_eq!(password, Some("secret123".to_string()));
+            }
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn client_control_hello_with_ttl() {
+        let hello = ClientControl::Hello {
+            port: 8080,
+            subdomain: None,
+            password: None,
+            ttl_secs: Some(1800),
+        };
+        let json = hello.to_json().unwrap();
+        let parsed = ClientControl::from_json(&json).unwrap();
+        match parsed {
+            ClientControl::Hello { ttl_secs, .. } => {
+                assert_eq!(ttl_secs, Some(1800));
+            }
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn client_control_hello_backward_compat() {
+        let json = r#"{"type":"Hello","port":3000}"#;
+        let parsed = ClientControl::from_json(json).unwrap();
+        match parsed {
+            ClientControl::Hello {
+                port,
+                subdomain,
+                password,
+                ttl_secs,
+            } => {
+                assert_eq!(port, 3000);
+                assert_eq!(subdomain, None);
+                assert_eq!(password, None);
+                assert_eq!(ttl_secs, None);
+            }
+            _ => panic!("expected Hello"),
+        }
     }
 
     #[test]

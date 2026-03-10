@@ -148,7 +148,12 @@ async fn connect_and_run(
     let (user, tunnel_url) = match auth_resp {
         Message::Text(text) => match ServerControl::from_json(&text)? {
             ServerControl::AuthOk { user, .. } => {
-                let hello = ClientControl::Hello { port, subdomain };
+                let hello = ClientControl::Hello {
+                    port,
+                    subdomain,
+                    password: None,
+                    ttl_secs: None,
+                };
                 ws_write
                     .send(Message::Text(hello.to_json()?.into()))
                     .await?;
