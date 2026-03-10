@@ -1,6 +1,7 @@
 use crate::error::{Result, XpoError};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn default_server() -> String {
     "eu.xpo.sh".to_string()
@@ -47,27 +48,52 @@ impl Config {
                 return Ok(Self::default());
             }
         }
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| XpoError::Config(format!("failed to read {}: {e}", path.display())))?;
-        let config: Config = toml::from_str(&contents)?;
-        Ok(config)
+        Self::load_from_path(&path, &Self::lock_path())
     }
 
     pub fn save(&self) -> Result<()> {
         let dir = Self::dir();
         std::fs::create_dir_all(&dir)
             .map_err(|e| XpoError::Config(format!("failed to create {}: {e}", dir.display())))?;
-        let contents = toml::to_string_pretty(self)
+        Self::save_to_path(self, &Self::path(), &Self::lock_path())
+    }
+
+    pub fn load_from_path(config_path: &Path, lock_path: &Path) -> Result<Self> {
+        let _lock = std::fs::File::create(lock_path).ok().and_then(|f| {
+            f.lock_shared().ok()?;
+            Some(f)
+        });
+        let contents = std::fs::read_to_string(config_path).map_err(|e| {
+            XpoError::Config(format!("failed to read {}: {e}", config_path.display()))
+        })?;
+        let config: Config = toml::from_str(&contents)?;
+        Ok(config)
+    }
+
+    pub fn save_to_path(config: &Config, config_path: &Path, lock_path: &Path) -> Result<()> {
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                XpoError::Config(format!("failed to create {}: {e}", parent.display()))
+            })?;
+        }
+        let _lock = std::fs::File::create(lock_path).ok().and_then(|f| {
+            f.lock_exclusive().ok()?;
+            Some(f)
+        });
+        let contents = toml::to_string_pretty(config)
             .map_err(|e| XpoError::Config(format!("failed to serialize config: {e}")))?;
-        let path = Self::path();
-        std::fs::write(&path, contents)
+        std::fs::write(config_path, contents)
             .map_err(|e| XpoError::Config(format!("failed to write config: {e}")))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
         }
         Ok(())
+    }
+
+    pub fn lock_path() -> PathBuf {
+        Self::dir().join("config.toml.lock")
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -181,6 +207,33 @@ server = "us.xpo.sh"
         assert!(config.is_expired());
         config.auth.expires_at = Some(9999999999);
         assert!(!config.is_expired());
+    }
+
+    #[test]
+    fn config_concurrent_save_does_not_corrupt() {
+        use std::sync::{Arc, Barrier};
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let lock_path = dir.path().join("config.toml.lock");
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let config_path = config_path.clone();
+                let lock_path = lock_path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let mut config = Config::default();
+                    config.auth.email = Some(format!("user{}@test.com", i));
+                    Config::save_to_path(&config, &config_path, &lock_path).unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let loaded = Config::load_from_path(&config_path, &lock_path).unwrap();
+        assert!(loaded.auth.email.is_some());
     }
 
     #[test]
