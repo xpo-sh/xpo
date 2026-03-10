@@ -21,7 +21,10 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (rows, _) = fetch_all(false).await;
 
     let rt = tokio::runtime::Handle::current();
-    xpo_tui::list_app::run(rows, move || rt.block_on(async { fetch_rows_only().await }))?;
+    tokio::task::spawn_blocking(move || {
+        xpo_tui::list_app::run(rows, move || rt.block_on(fetch_rows_only()))
+    })
+    .await??;
     Ok(())
 }
 
