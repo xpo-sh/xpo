@@ -729,6 +729,120 @@ fn serialize_response(
     bytes
 }
 
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+#[allow(dead_code)]
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .pool_idle_timeout(std::time::Duration::from_secs(5))
+        .pool_max_idle_per_host(4)
+        .http1_only()
+        .no_proxy()
+        .build()
+        .expect("failed to build HTTP client")
+}
+
+#[allow(dead_code)]
+async fn proxy_http_reqwest(
+    client: &reqwest::Client,
+    port: u16,
+    raw_request: &[u8],
+    cors: bool,
+) -> Vec<u8> {
+    let (method, path, headers, body) = match parse_raw_request(raw_request) {
+        Some(parsed) => parsed,
+        None => return crate::error_page::error_response(502, "malformed request", ".sh"),
+    };
+
+    let url = format!("http://localhost:{port}{path}");
+
+    let reqwest_method = match reqwest::Method::from_bytes(method.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return crate::error_page::error_response(400, "invalid method", ".sh"),
+    };
+
+    let mut req_builder = client.request(reqwest_method, &url);
+
+    let mut original_host = None;
+    for (name, value) in &headers {
+        if name.eq_ignore_ascii_case("host") {
+            original_host = Some(value.clone());
+            continue;
+        }
+        if name.eq_ignore_ascii_case("connection") {
+            continue;
+        }
+        if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) {
+            if let Ok(header_value) = reqwest::header::HeaderValue::from_str(value) {
+                req_builder = req_builder.header(header_name, header_value);
+            }
+        }
+    }
+
+    if let Some(ref orig) = original_host {
+        req_builder = req_builder.header("X-Forwarded-Host", orig.as_str());
+    }
+
+    if !body.is_empty() {
+        req_builder = req_builder.body(body);
+    }
+
+    let response = match req_builder.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            if e.is_timeout() {
+                return crate::error_page::error_response(504, "upstream timeout", ".sh");
+            }
+            return crate::error_page::error_response(502, "upstream is down", ".sh");
+        }
+    };
+
+    let status = response.status().as_u16();
+    let reason = response
+        .status()
+        .canonical_reason()
+        .unwrap_or("OK")
+        .to_string();
+
+    if let Some(cl) = response.content_length() {
+        if cl > MAX_BODY_SIZE as u64 {
+            return crate::error_page::error_response(502, "response too large", ".sh");
+        }
+    }
+
+    let resp_headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|val| (k.as_str().to_string(), val.to_string()))
+        })
+        .collect();
+
+    let body_bytes = match response.bytes().await {
+        Ok(b) => {
+            if b.len() > MAX_BODY_SIZE {
+                return crate::error_page::error_response(502, "response too large", ".sh");
+            }
+            b
+        }
+        Err(_) => {
+            return crate::error_page::error_response(502, "failed to read response", ".sh");
+        }
+    };
+
+    let mut result = serialize_response(status, &reason, &resp_headers, &body_bytes);
+
+    if cors {
+        result = inject_cors_headers(&result);
+    }
+
+    result
+}
+
 async fn get_token() -> String {
     match crate::auth::get_token().await {
         Ok(token) => token,
@@ -965,7 +1079,7 @@ mod tests {
     #[test]
     fn parse_raw_request_post_with_body() {
         let raw = b"POST /api HTTP/1.1\r\nHost: test.xpo.sh\r\nContent-Length: 13\r\n\r\n{\"key\":\"val\"}";
-        let (method, path, headers, body) = parse_raw_request(raw).unwrap();
+        let (method, path, _headers, body) = parse_raw_request(raw).unwrap();
         assert_eq!(method, "POST");
         assert_eq!(path, "/api");
         assert_eq!(body, b"{\"key\":\"val\"}");
@@ -1043,5 +1157,340 @@ mod tests {
         let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let actual_body = &raw[header_end + 4..];
         assert_eq!(actual_body, body);
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_basic_200() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req.contains("x-forwarded-host: myapp.xpo.sh")
+                    || req.contains("X-Forwarded-Host: myapp.xpo.sh")
+            );
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET /hello HTTP/1.1\r\nHost: myapp.xpo.sh\r\nAccept: */*\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("200 OK") || s.contains("200 ok"), "status: {s}");
+        assert!(s.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_chunked_response() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("200"));
+        assert!(!s.to_ascii_lowercase().contains("transfer-encoding"));
+        let header_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let body = &response[header_end + 4..];
+        assert_eq!(body, b"hello world", "chunked body must be decoded");
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_gzip_preserved() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let gzip_body: Vec<u8> = {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(b"hello gzip world").unwrap();
+            encoder.finish().unwrap()
+        };
+        let gzip_clone = gzip_body.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                gzip_clone.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(&gzip_clone).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\nAccept-Encoding: gzip\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(
+            s.to_ascii_lowercase().contains("content-encoding: gzip")
+                || s.to_ascii_lowercase().contains("content-encoding:gzip"),
+            "gzip header preserved"
+        );
+        let header_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let body = &response[header_end + 4..];
+        assert_eq!(body, &gzip_body, "gzip body must pass through unmodified");
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_connection_refused() {
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
+        let response = proxy_http_reqwest(&client, 19999, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("502"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_post_body_forwarded() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req.contains("{\"name\":\"test\"}"),
+                "POST body must be forwarded"
+            );
+            let resp = "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"POST /api HTTP/1.1\r\nHost: test.xpo.sh\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"name\":\"test\"}";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("201"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_redirect_not_followed() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 302 Found\r\nLocation: /other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("302"), "redirect must NOT be followed");
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_binary_response() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let binary_body: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+        let bin_clone = binary_body.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bin_clone.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(&bin_clone).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET /img.png HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let header_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let body = &response[header_end + 4..];
+        assert_eq!(
+            body, &binary_body,
+            "binary body must be byte-for-byte identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_strict_host_check() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let host_line = req
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("host:"))
+                .unwrap_or("");
+            let host_val = host_line
+                .split_once(':')
+                .map(|(_, v)| v.trim())
+                .unwrap_or("");
+            let resp = if host_val.starts_with("localhost") {
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            } else {
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\nConnection: close\r\n\r\nInvalid Host header"
+            };
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: fi5f4h.xpo.sh\r\nAccept: */*\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(
+            s.contains("200"),
+            "strict host check must pass because Host is rewritten to localhost: {s}"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_chunked_plus_gzip() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let gzip_body: Vec<u8> = {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(b"chunked gzip test").unwrap();
+            encoder.finish().unwrap()
+        };
+        let gz_clone = gzip_body.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let chunk_hex = format!("{:x}", gz_clone.len());
+            let mut resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n{chunk_hex}\r\n"
+            )
+            .into_bytes();
+            resp.extend_from_slice(&gz_clone);
+            resp.extend_from_slice(b"\r\n0\r\n\r\n");
+            stream.write_all(&resp).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\nAccept-Encoding: gzip\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let header_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let body = &response[header_end + 4..];
+        assert_eq!(
+            body, &gzip_body,
+            "chunked+gzip: body must be decoded chunks but still gzip"
+        );
+        let s = String::from_utf8_lossy(&response);
+        assert!(!s.to_ascii_lowercase().contains("transfer-encoding"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_empty_body_204() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"DELETE /item/1 HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("204"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_4xx_passthrough() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET /missing HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("404"));
+        assert!(s.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_custom_headers_preserved() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(req
+                .to_ascii_lowercase()
+                .contains("authorization: bearer token123"));
+            let resp = "HTTP/1.1 200 OK\r\nSet-Cookie: sid=abc; Path=/\r\nX-Response-Id: r42\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET /api HTTP/1.1\r\nHost: test.xpo.sh\r\nAuthorization: Bearer token123\r\nX-Custom: myvalue\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response).to_ascii_lowercase();
+        assert!(s.contains("set-cookie"), "Set-Cookie must be preserved");
+        assert!(s.contains("sid=abc"), "cookie value must be preserved");
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_host_with_port() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let host_line = req
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("host:"))
+                .unwrap_or("");
+            assert!(
+                host_line.contains("localhost"),
+                "Host must be rewritten: {host_line}"
+            );
+            assert!(req
+                .to_ascii_lowercase()
+                .contains("x-forwarded-host: myapp.xpo.sh:443"));
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let raw_request = b"GET / HTTP/1.1\r\nHost: myapp.xpo.sh:443\r\n\r\n";
+        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("200"));
     }
 }
