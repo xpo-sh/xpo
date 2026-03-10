@@ -671,6 +671,36 @@ fn inject_connection_close(raw: &[u8]) -> Vec<u8> {
     patched
 }
 
+#[allow(dead_code, clippy::type_complexity)]
+fn parse_raw_request(raw: &[u8]) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
+    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let header_bytes = &raw[..header_end];
+    let body = raw[header_end + 4..].to_vec();
+
+    let header_str = String::from_utf8_lossy(header_bytes);
+    let mut lines = header_str.split("\r\n");
+
+    let first_line = lines.next()?;
+    let parts: Vec<&str> = first_line.splitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let method = parts[0].to_string();
+    let path = parts[1].to_string();
+
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+
+    Some((method, path, headers, body))
+}
+
 async fn get_token() -> String {
     match crate::auth::get_token().await {
         Ok(token) => token,
@@ -891,5 +921,47 @@ mod tests {
         let resp = b"HTTP/1.1 200 OK\r\n";
         let patched = inject_cors_headers(resp);
         assert_eq!(patched, resp.to_vec());
+    }
+
+    #[test]
+    fn parse_raw_request_basic_get() {
+        let raw = b"GET /hello HTTP/1.1\r\nHost: myapp.xpo.sh\r\nAccept: */*\r\n\r\n";
+        let (method, path, headers, body) = parse_raw_request(raw).unwrap();
+        assert_eq!(method, "GET");
+        assert_eq!(path, "/hello");
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0], ("Host".to_string(), "myapp.xpo.sh".to_string()));
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn parse_raw_request_post_with_body() {
+        let raw = b"POST /api HTTP/1.1\r\nHost: test.xpo.sh\r\nContent-Length: 13\r\n\r\n{\"key\":\"val\"}";
+        let (method, path, headers, body) = parse_raw_request(raw).unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/api");
+        assert_eq!(body, b"{\"key\":\"val\"}");
+    }
+
+    #[test]
+    fn parse_raw_request_with_query() {
+        let raw = b"GET /search?q=test&page=1 HTTP/1.1\r\nHost: x.xpo.sh\r\n\r\n";
+        let (_, path, _, _) = parse_raw_request(raw).unwrap();
+        assert_eq!(path, "/search?q=test&page=1");
+    }
+
+    #[test]
+    fn parse_raw_request_no_header_end() {
+        let raw = b"GET / HTTP/1.1\r\nHost: x";
+        assert!(parse_raw_request(raw).is_none());
+    }
+
+    #[test]
+    fn parse_raw_request_binary_body() {
+        let mut raw = b"POST /upload HTTP/1.1\r\nHost: x.xpo.sh\r\nContent-Type: application/octet-stream\r\n\r\n".to_vec();
+        let binary: &[u8] = &[0x00, 0x01, 0xFF, 0xFE, 0x80];
+        raw.extend_from_slice(binary);
+        let (_, _, _, body) = parse_raw_request(&raw).unwrap();
+        assert_eq!(body, binary);
     }
 }
