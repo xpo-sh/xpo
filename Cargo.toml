@@ -4,6 +4,7 @@ members = [
     "crates/xpo-core",
     "crates/xpo-client",
     "crates/xpo-server",
+    "crates/xpo-tui",
 ]
 
 [workspace.package]

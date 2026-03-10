@@ -28,8 +28,10 @@ enum Commands {
         subdomain: Option<String>,
         #[arg(short, long)]
         domain: Option<String>,
+        #[arg(long, default_value = "500")]
+        log_max: usize,
         #[arg(long, default_value = "10")]
-        logs: usize,
+        log_visible: usize,
         #[arg(long)]
         cors: bool,
     },
@@ -61,8 +63,10 @@ struct DevArgs {
     #[arg(short, long)]
     name: Option<String>,
 
+    #[arg(long, default_value = "500")]
+    log_max: usize,
     #[arg(long, default_value = "10")]
-    logs: usize,
+    log_visible: usize,
 }
 
 #[derive(Subcommand)]
@@ -103,7 +107,9 @@ async fn main() {
                         std::process::exit(1);
                     }
                     match ensure_dev_setup() {
-                        Ok(()) => dev::proxy::run(port, &name, args.logs).await,
+                        Ok(()) => {
+                            dev::proxy::run(port, &name, args.log_max, args.log_visible).await
+                        }
                         Err(e) => Err(e),
                     }
                 } else {
@@ -118,12 +124,13 @@ async fn main() {
             port,
             subdomain,
             domain: _,
-            logs,
+            log_max,
+            log_visible,
             cors,
         } => {
             let server =
                 std::env::var("XPO_SERVER").unwrap_or_else(|_| "ws.xpo.sh:8081".to_string());
-            tunnel::run(port, subdomain, &server, logs, cors).await
+            tunnel::run(port, subdomain, &server, log_max, log_visible, cors).await
         }
         Commands::Login { provider } => {
             let provider = provider.unwrap_or_else(|| {

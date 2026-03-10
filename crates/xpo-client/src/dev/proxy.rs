@@ -1,73 +1,24 @@
 use crate::dev::{ca, hosts};
 use console::style;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use xpo_core::error_page::ErrorPage;
+use xpo_tui::app::{BannerInfo, TuiApp};
+use xpo_tui::event::AppEvent;
+use xpo_tui::model::RequestLog;
 
-struct LogState {
-    entries: VecDeque<String>,
-    displayed: usize,
-    max: usize,
-}
+static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-impl LogState {
-    fn new(max: usize) -> Self {
-        Self {
-            entries: VecDeque::new(),
-            displayed: 0,
-            max,
-        }
-    }
-}
-
-fn print_banner(domain: &str, port: u16) {
-    let d = "\x1b[2m";
-    let b = "\x1b[1m";
-    let c = "\x1b[36;1m";
-    let r = "\x1b[0m";
-
-    let url = format!("https://{domain}");
-    let target = format!("localhost:{port}");
-
-    let line1 = "xpo dev";
-    let line2 = format!("{url} -> {target}");
-    let line3 = "Ctrl+C to stop";
-
-    let inner = line1.len().max(line2.len()).max(line3.len()) + 4;
-    let border = "\u{2500}".repeat(inner);
-    let empty = " ".repeat(inner);
-
-    let pad1 = inner - line1.len() - 2;
-    let pad2 = inner - line2.len() - 2;
-    let pad3 = inner - line3.len() - 2;
-
-    println!();
-    println!("  {d}\u{256d}{border}\u{256e}{r}");
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {b}{line1}{r}{}{d}\u{2502}{r}",
-        " ".repeat(pad1)
-    );
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {c}{url}{r} -> {target}{}{d}\u{2502}{r}",
-        " ".repeat(pad2)
-    );
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {d}{line3}{r}{}{d}\u{2502}{r}",
-        " ".repeat(pad3)
-    );
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!("  {d}\u{2570}{border}\u{256f}{r}");
-    println!();
-}
-
-pub async fn run(port: u16, name: &str, max_logs: usize) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    port: u16,
+    name: &str,
+    max_logs: usize,
+    visible_rows: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let domain = format!("{name}.test");
 
     let status = std::process::Command::new("sudo")
@@ -132,45 +83,156 @@ pub async fn run(port: u16, name: &str, max_logs: usize) -> Result<(), Box<dyn s
         }
     });
 
-    print_banner(&domain, port);
+    let use_tui = TuiApp::check_terminal_size();
+    let (app_tx, events) = TuiApp::create_channel();
+    let quit_flag = Arc::new(AtomicBool::new(false));
 
-    let log_state = Arc::new(std::sync::Mutex::new(LogState::new(max_logs)));
+    let tui_handle = if use_tui {
+        let banner = BannerInfo {
+            title: "xpo dev".to_string(),
+            url: format!("https://{domain}"),
+            target: format!("localhost:{port}"),
+            extra_lines: vec![],
+            has_qr: false,
+            qr_url: None,
+        };
+        let qf = quit_flag.clone();
+        Some(std::thread::spawn(move || {
+            let mut terminal = match TuiApp::init_terminal() {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            let mut app = TuiApp::new(banner, max_logs, visible_rows);
+
+            loop {
+                let _ = terminal.draw(|frame| xpo_tui::render::draw(frame, &app));
+
+                match events.next() {
+                    Ok(event) => {
+                        app.handle_event(event);
+                        if app.should_quit {
+                            qf.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let summary = app.summary_line();
+            drop(terminal);
+            TuiApp::restore_terminal();
+            print!("\r\x1b[2K");
+            println!("{summary}");
+        }))
+    } else {
+        legacy_print_banner(&domain, port);
+        None
+    };
+
     let domain_clone = domain.clone();
+    let quit_notify = Arc::new(tokio::sync::Notify::new());
+    let quit_notify2 = quit_notify.clone();
+
+    let qf_check = quit_flag.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if qf_check.load(Ordering::Relaxed) {
+                quit_notify2.notify_one();
+                break;
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 match result {
                     Ok((stream, _)) => {
                         let acceptor = acceptor.clone();
-                        let ls = log_state.clone();
-                        tokio::spawn(handle_connection(acceptor, stream, port, ls));
+                        let tx = app_tx.clone();
+                        tokio::spawn(handle_connection(acceptor, stream, port, tx));
                     }
                     Err(e) => {
-                        eprintln!("  {} Accept error: {e}", style("✗").red());
+                        eprintln!("  {} Accept error: {e}", style("\u{2717}").red());
                     }
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                eprint!("\r\x1b[2K");
-                println!("  {} Cleaning up...", style("→").dim());
-                let _ = hosts::remove(&domain_clone);
-                println!("  {} Stopped", style("✓").green().bold());
-                println!();
+                break;
+            }
+            _ = quit_notify.notified() => {
                 break;
             }
         }
     }
 
+    let _ = hosts::remove(&domain_clone);
+    drop(app_tx);
+
+    if let Some(handle) = tui_handle {
+        let _ = handle.join();
+    } else {
+        eprint!("\r\x1b[2K");
+        println!("  {} Cleaning up...", style("\u{2192}").dim());
+        println!("  {} Stopped", style("\u{2713}").green().bold());
+        println!();
+    }
+
     Ok(())
+}
+
+fn legacy_print_banner(domain: &str, port: u16) {
+    let d = "\x1b[2m";
+    let b = "\x1b[1m";
+    let c = "\x1b[36;1m";
+    let r = "\x1b[0m";
+
+    let url = format!("https://{domain}");
+    let target = format!("localhost:{port}");
+
+    let line1 = "xpo dev";
+    let line2 = format!("{url} -> {target}");
+    let line3 = "Ctrl+C to stop";
+
+    let inner = line1.len().max(line2.len()).max(line3.len()) + 4;
+    let border = "\u{2500}".repeat(inner);
+    let empty = " ".repeat(inner);
+
+    let pad1 = inner - line1.len() - 2;
+    let pad2 = inner - line2.len() - 2;
+    let pad3 = inner - line3.len() - 2;
+
+    println!();
+    println!("  {d}\u{256d}{border}\u{256e}{r}");
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {b}{line1}{r}{}{d}\u{2502}{r}",
+        " ".repeat(pad1)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {c}{url}{r} -> {target}{}{d}\u{2502}{r}",
+        " ".repeat(pad2)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {d}{line3}{r}{}{d}\u{2502}{r}",
+        " ".repeat(pad3)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!("  {d}\u{2570}{border}\u{256f}{r}");
+    println!();
 }
 
 async fn handle_connection(
     acceptor: TlsAcceptor,
     tcp_stream: TcpStream,
     upstream_port: u16,
-    log_state: Arc<std::sync::Mutex<LogState>>,
+    event_tx: std::sync::mpsc::Sender<AppEvent>,
 ) {
-    if let Err(e) = proxy_connection(acceptor, tcp_stream, upstream_port, &log_state).await {
+    if let Err(e) = proxy_connection(acceptor, tcp_stream, upstream_port, &event_tx).await {
         let msg = e.to_string();
         if !msg.contains("connection reset")
             && !msg.contains("broken pipe")
@@ -179,7 +241,7 @@ async fn handle_connection(
             && !msg.contains("close_notify")
             && !msg.contains("CertificateUnknown")
         {
-            eprintln!("  {} {msg}", style("✗").red().dim());
+            eprintln!("  {} {msg}", style("\u{2717}").red().dim());
         }
     }
 }
@@ -201,95 +263,91 @@ fn error_page(status_code: u16, title: &str, message: &str, hint: &str) -> Strin
     )
 }
 
-fn log_request(
-    state: &Arc<std::sync::Mutex<LogState>>,
+fn parse_headers(raw: &[u8]) -> Vec<(String, String)> {
+    let s = String::from_utf8_lossy(raw);
+    let mut headers = Vec::new();
+    for line in s.split("\r\n").skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((key, val)) = line.split_once(':') {
+            headers.push((key.trim().to_string(), val.trim().to_string()));
+        }
+    }
+    headers
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_request_log(
+    tx: &std::sync::mpsc::Sender<AppEvent>,
     method: &str,
     path: &str,
-    status: &str,
+    status: u16,
     duration: std::time::Duration,
+    req_headers: Vec<(String, String)>,
+    resp_headers: Vec<(String, String)>,
+    body_size: u64,
 ) {
-    let status_code: u16 = status.parse().unwrap_or(0);
-
-    let styled_status = if status_code >= 500 {
-        style(status).red().bold()
-    } else if status_code >= 400 {
-        style(status).yellow()
-    } else if status_code >= 300 {
-        style(status).cyan()
-    } else if status_code >= 200 {
-        style(status).green()
-    } else {
-        style(status).dim()
+    let log = RequestLog {
+        id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed),
+        timestamp: time::OffsetDateTime::now_utc(),
+        method: method.to_string(),
+        path: path.to_string(),
+        status,
+        duration_ms: duration.as_millis() as u64,
+        request_headers: req_headers,
+        response_headers: resp_headers,
+        body_preview: None,
+        body_size,
     };
-
-    let ms = format!("{}ms", duration.as_millis());
-    let suffix = format!(" {} {:>6}", status, ms);
-    let term_width = terminal_size::terminal_size()
-        .map(|(w, _)| w.0 as usize)
-        .unwrap_or(80);
-    let prefix = format!("  {:<6} ", method);
-    let max_path = term_width.saturating_sub(prefix.len() + suffix.len());
-    let display_path = if path.len() > max_path && max_path > 3 {
-        format!("{}...", &path[..max_path - 3])
-    } else {
-        path.to_string()
-    };
-    let pad = term_width.saturating_sub(prefix.len() + display_path.len() + suffix.len());
-    let line = format!(
-        "  {:<6} {}{:>pad$}{} {:>6}",
-        style(method).bold(),
-        display_path,
-        "",
-        styled_status,
-        style(ms).dim(),
-        pad = pad
-    );
-
-    let mut state = state.lock().unwrap();
-    state.entries.push_back(line);
-    if state.max > 0 && state.entries.len() > state.max {
-        state.entries.pop_front();
-    }
-
-    if state.displayed > 0 {
-        print!("\x1b[{}A\x1b[J", state.displayed);
-    }
-    for entry in &state.entries {
-        println!("{entry}");
-    }
-    use std::io::Write;
-    std::io::stdout().flush().ok();
-    state.displayed = state.entries.len();
+    let _ = tx.send(AppEvent::Request(log));
 }
 
 async fn proxy_connection(
     acceptor: TlsAcceptor,
     tcp_stream: TcpStream,
     upstream_port: u16,
-    log_state: &Arc<std::sync::Mutex<LogState>>,
+    event_tx: &std::sync::mpsc::Sender<AppEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let start = std::time::Instant::now();
 
     let tls_stream = acceptor.accept(tcp_stream).await?;
     let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
 
-    let mut request_line = Vec::with_capacity(512);
-    let mut byte = [0u8; 1];
+    let mut buf = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 4096];
     loop {
-        tls_read.read_exact(&mut byte).await?;
-        request_line.push(byte[0]);
-        if request_line.ends_with(b"\r\n") {
+        let n = tls_read.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
-        if request_line.len() > 8192 {
+        if buf.len() > 65536 {
             break;
         }
     }
 
-    let req_str = String::from_utf8_lossy(&request_line);
-    let parts: Vec<&str> = req_str.split_whitespace().collect();
+    let header_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(buf.len());
+    let headers_with_sep = &buf[..header_end + 4];
+    let body_remainder = &buf[header_end + 4..];
+
+    let header_str = String::from_utf8_lossy(headers_with_sep);
+    let first_line_end = header_str.find("\r\n").unwrap_or(header_str.len());
+    let parts: Vec<&str> = header_str[..first_line_end].split_whitespace().collect();
     let method = parts.first().copied().unwrap_or("???").to_string();
     let path = parts.get(1).copied().unwrap_or("/").to_string();
+
+    let is_ws_upgrade = header_str
+        .to_ascii_lowercase()
+        .contains("upgrade: websocket");
+    let req_headers = parse_headers(headers_with_sep);
+    let rewritten = rewrite_host_header(headers_with_sep, upstream_port);
 
     let mut upstream = match TcpStream::connect(("localhost", upstream_port)).await {
         Ok(s) => s,
@@ -302,79 +360,92 @@ async fn proxy_connection(
             );
             let _ = tls_write.write_all(resp.as_bytes()).await;
             let _ = tls_write.shutdown().await;
-            log_request(log_state, &method, &path, "502", start.elapsed());
+            send_request_log(
+                event_tx,
+                &method,
+                &path,
+                502,
+                start.elapsed(),
+                req_headers,
+                vec![],
+                0,
+            );
             return Ok(());
         }
     };
 
     let (mut up_read, mut up_write) = upstream.split();
 
-    up_write.write_all(&request_line).await?;
+    up_write.write_all(&rewritten).await?;
+    if !body_remainder.is_empty() {
+        up_write.write_all(body_remainder).await?;
+    }
 
     let captured_status = Arc::new(std::sync::Mutex::new(String::from("---")));
+    let captured_resp_headers: Arc<std::sync::Mutex<Vec<(String, String)>>> =
+        Arc::new(std::sync::Mutex::new(vec![]));
+    let captured_body_size: Arc<std::sync::atomic::AtomicU64> =
+        Arc::new(std::sync::atomic::AtomicU64::new(0));
     let status_for_copy = captured_status.clone();
+    let resp_headers_for_copy = captured_resp_headers.clone();
+    let body_size_for_copy = captured_body_size.clone();
 
     let client_to_server = async {
         tokio::io::copy(&mut tls_read, &mut up_write).await?;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     let server_to_client = async {
-        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let mut resp_first_line = Vec::with_capacity(128);
-            let mut b = [0u8; 1];
-            loop {
-                if up_read.read_exact(&mut b).await.is_err() {
-                    return resp_first_line;
-                }
-                resp_first_line.push(b[0]);
-                if resp_first_line.ends_with(b"\r\n") {
-                    return resp_first_line;
-                }
-                if resp_first_line.len() > 1024 {
-                    return resp_first_line;
-                }
-            }
-        })
+        let mut resp_buf = Vec::with_capacity(8192);
+        let mut chunk = [0u8; 4096];
+
+        let first_read = tokio::time::timeout(
+            std::time::Duration::from_secs(if is_ws_upgrade { 30 } else { 10 }),
+            up_read.read(&mut chunk),
+        )
         .await;
 
-        let resp_first_line = match timeout {
-            Ok(line) => line,
-            Err(_) => {
-                let resp = error_page(
-                    504,
-                    "Gateway Timeout",
-                    &format!("<b>localhost:{upstream_port}</b> did not respond"),
-                    "Server may be restarting",
-                );
+        match first_read {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                let (code, title, msg) = if first_read.is_err() {
+                    (
+                        504,
+                        "Gateway Timeout",
+                        format!("<b>localhost:{upstream_port}</b> did not respond"),
+                    )
+                } else {
+                    (
+                        502,
+                        "Bad Gateway",
+                        format!("Connection to <b>localhost:{upstream_port}</b> lost"),
+                    )
+                };
+                let resp = error_page(code, title, &msg, "Server may be restarting");
                 let _ = tls_write.write_all(resp.as_bytes()).await;
-                *status_for_copy.lock().unwrap() = "504".to_string();
+                *status_for_copy.lock().unwrap() = code.to_string();
                 return Ok(());
             }
-        };
-
-        if resp_first_line.is_empty() {
-            let resp = error_page(
-                502,
-                "Bad Gateway",
-                &format!("Connection to <b>localhost:{upstream_port}</b> lost"),
-                "Server may have stopped",
-            );
-            let _ = tls_write.write_all(resp.as_bytes()).await;
-            *status_for_copy.lock().unwrap() = "502".to_string();
-            return Ok(());
+            Ok(Ok(n)) => {
+                resp_buf.extend_from_slice(&chunk[..n]);
+            }
         }
 
-        let _ = tls_write.write_all(&resp_first_line).await;
-
-        let resp_str = String::from_utf8_lossy(&resp_first_line);
+        let resp_str = String::from_utf8_lossy(&resp_buf);
         let status = resp_str
             .split_whitespace()
             .nth(1)
             .unwrap_or("???")
             .to_string();
-
         *status_for_copy.lock().unwrap() = status;
 
+        *resp_headers_for_copy.lock().unwrap() = parse_headers(&resp_buf);
+        if let Some(cl) = parse_headers(&resp_buf)
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        {
+            body_size_for_copy.store(cl.1.parse().unwrap_or(0), Ordering::Relaxed);
+        }
+
+        let _ = tls_write.write_all(&resp_buf).await;
         let _ = tokio::io::copy(&mut up_read, &mut tls_write).await;
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -384,10 +455,65 @@ async fn proxy_connection(
 
     let duration = start.elapsed();
     let status_str = captured_status.lock().unwrap().clone();
+    let status_code: u16 = status_str.parse().unwrap_or(0);
+    let resp_headers = captured_resp_headers.lock().unwrap().clone();
+    let body_size = captured_body_size.load(Ordering::Relaxed);
 
-    log_request(log_state, &method, &path, &status_str, duration);
+    send_request_log(
+        event_tx,
+        &method,
+        &path,
+        status_code,
+        duration,
+        req_headers,
+        resp_headers,
+        body_size,
+    );
 
     Ok(())
+}
+
+fn rewrite_host_header(raw: &[u8], port: u16) -> Vec<u8> {
+    let header_end = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(pos) => pos,
+        None => return raw.to_vec(),
+    };
+
+    let header_bytes = &raw[..header_end];
+    let header_str = String::from_utf8_lossy(header_bytes);
+    let first_crlf = match header_str.find("\r\n") {
+        Some(pos) => pos,
+        None => return raw.to_vec(),
+    };
+
+    let is_ws_upgrade = header_str
+        .to_ascii_lowercase()
+        .contains("upgrade: websocket");
+
+    let mut patched = Vec::with_capacity(raw.len() + 64);
+    patched.extend_from_slice(&header_bytes[..first_crlf + 2]);
+
+    if !is_ws_upgrade {
+        patched.extend_from_slice(b"Connection: close\r\n");
+    }
+
+    for line in header_str[first_crlf + 2..].split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("host:") {
+            patched.extend_from_slice(format!("Host: localhost:{port}\r\n").as_bytes());
+        } else if !is_ws_upgrade && lower.starts_with("connection:") {
+            continue;
+        } else {
+            patched.extend_from_slice(line.as_bytes());
+            patched.extend_from_slice(b"\r\n");
+        }
+    }
+
+    patched.extend_from_slice(b"\r\n");
+    patched
 }
 
 #[cfg(test)]
@@ -481,8 +607,9 @@ mod tests {
         assert!(response.contains("Location: https://myapp.test/"));
     }
 
-    fn test_log_state() -> Arc<std::sync::Mutex<LogState>> {
-        Arc::new(std::sync::Mutex::new(LogState::new(10)))
+    fn test_event_tx() -> std::sync::mpsc::Sender<AppEvent> {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        tx
     }
 
     fn test_tls_pair() -> (
@@ -540,14 +667,13 @@ mod tests {
         });
 
         let (acceptor, connector, _) = test_tls_pair();
-        let log_state = test_log_state();
-        let ls = log_state.clone();
+        let event_tx = test_event_tx();
         let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = proxy_listener.local_addr().unwrap();
 
         tokio::spawn(async move {
             let (stream, _) = proxy_listener.accept().await.unwrap();
-            let _ = proxy_connection(acceptor, stream, upstream_port, &ls).await;
+            let _ = proxy_connection(acceptor, stream, upstream_port, &event_tx).await;
         });
 
         let tcp = TcpStream::connect(proxy_addr).await.unwrap();
@@ -577,14 +703,13 @@ mod tests {
     #[tokio::test]
     async fn e2e_proxy_502_upstream_down() {
         let (acceptor, connector, _) = test_tls_pair();
-        let log_state = test_log_state();
-        let ls = log_state.clone();
+        let event_tx = test_event_tx();
         let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = proxy_listener.local_addr().unwrap();
 
         tokio::spawn(async move {
             let (stream, _) = proxy_listener.accept().await.unwrap();
-            let _ = proxy_connection(acceptor, stream, 19999, &ls).await;
+            let _ = proxy_connection(acceptor, stream, 19999, &event_tx).await;
         });
 
         let tcp = TcpStream::connect(proxy_addr).await.unwrap();
@@ -604,20 +729,31 @@ mod tests {
     }
 
     #[test]
-    fn rolling_log_keeps_max_10() {
-        let state = test_log_state();
+    fn rolling_log_via_event_channel() {
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let mut state = xpo_tui::model::TuiState::new(10, 10);
+
         for i in 0..15 {
-            log_request(
-                &state,
+            send_request_log(
+                &tx,
                 "GET",
                 &format!("/page{i}"),
-                "200",
+                200,
                 std::time::Duration::from_millis(10),
+                vec![],
+                vec![],
+                0,
             );
         }
-        let s = state.lock().unwrap();
-        assert_eq!(s.entries.len(), 10);
-        assert!(s.entries.back().unwrap().contains("/page14"));
-        assert!(!s.entries.front().unwrap().contains("/page0"));
+
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::Request(req) = event {
+                state.push_request(req);
+            }
+        }
+
+        assert_eq!(state.requests.len(), 10);
+        assert_eq!(state.requests.back().unwrap().path, "/page14");
+        assert_ne!(state.requests.front().unwrap().path, "/page0");
     }
 }

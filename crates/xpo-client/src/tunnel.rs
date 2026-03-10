@@ -1,40 +1,52 @@
-use console::style;
 use futures_util::{SinkExt, StreamExt};
-use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_TIMEOUT_SECS, RECONNECT_MAX_SECS, RECONNECT_MIN_SECS};
-
-struct LogState {
-    entries: VecDeque<String>,
-    displayed: usize,
-    max: usize,
-}
-
-impl LogState {
-    fn new(max: usize) -> Self {
-        Self {
-            entries: VecDeque::new(),
-            displayed: 0,
-            max,
-        }
-    }
-}
+use xpo_tui::app::{BannerInfo, TuiApp};
+use xpo_tui::event::AppEvent;
+use xpo_tui::model::{ConnStatus, RequestLog};
 
 pub async fn run(
     port: u16,
     subdomain: Option<String>,
     server: &str,
     max_logs: usize,
+    visible_rows: usize,
     cors: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let use_tui = TuiApp::check_terminal_size();
+    let quit_flag = Arc::new(AtomicBool::new(false));
+
+    let (app_tx, events) = TuiApp::create_channel();
+
+    let tui_state = Arc::new(std::sync::Mutex::new(TuiThreadState {
+        events: Some(events),
+        handle: None,
+    }));
+
     let mut backoff = RECONNECT_MIN_SECS;
+    let mut first_connect = true;
 
     loop {
-        match connect_and_run(port, subdomain.clone(), server, max_logs, cors).await {
+        match connect_and_run(
+            port,
+            subdomain.clone(),
+            server,
+            cors,
+            &app_tx,
+            &quit_flag,
+            use_tui,
+            first_connect,
+            &tui_state,
+            max_logs,
+            visible_rows,
+        )
+        .await
+        {
             Ok(()) => break,
             Err(e) => {
                 let msg = e.to_string();
@@ -47,27 +59,59 @@ pub async fn run(
                 } else {
                     &msg
                 };
-                eprintln!(
-                    "  {} {}  {}",
-                    style("!").yellow().bold(),
-                    short,
-                    style(format!("(retry in {backoff}s)")).dim()
-                );
+
+                if use_tui {
+                    let _ = app_tx.send(AppEvent::Connection(ConnStatus::Reconnecting {
+                        attempt: (backoff / RECONNECT_MIN_SECS) as u32,
+                        next_retry_secs: backoff,
+                    }));
+                } else {
+                    eprintln!(
+                        "  {} {}  (retry in {backoff}s)",
+                        console::style("!").yellow().bold(),
+                        short,
+                    );
+                }
+
                 tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
                 backoff = (backoff * 2).min(RECONNECT_MAX_SECS);
+                first_connect = false;
+
+                if quit_flag.load(Ordering::Relaxed) {
+                    break;
+                }
             }
         }
+    }
+
+    drop(app_tx);
+
+    let handle = tui_state.lock().unwrap().handle.take();
+    if let Some(h) = handle {
+        let _ = h.join();
     }
 
     Ok(())
 }
 
+struct TuiThreadState {
+    events: Option<xpo_tui::event::EventHandler>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn connect_and_run(
     port: u16,
     subdomain: Option<String>,
     server: &str,
-    max_logs: usize,
     cors: bool,
+    app_tx: &std::sync::mpsc::Sender<AppEvent>,
+    quit_flag: &Arc<AtomicBool>,
+    use_tui: bool,
+    first_connect: bool,
+    tui_state: &Arc<std::sync::Mutex<TuiThreadState>>,
+    max_logs: usize,
+    visible_rows: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
         format!("ws://{server}")
@@ -112,15 +156,45 @@ async fn connect_and_run(
         _ => return Err("unexpected message type".into()),
     };
 
-    print_banner(&tunnel_url, port, &user);
+    let _ = app_tx.send(AppEvent::Connection(ConnStatus::Connected));
+
+    if use_tui && first_connect {
+        let mut ts = tui_state.lock().unwrap();
+        if ts.handle.is_none() {
+            let banner = BannerInfo {
+                title: "xpo share".to_string(),
+                url: tunnel_url.clone(),
+                target: format!("localhost:{port}"),
+                extra_lines: if user.is_empty() {
+                    vec![]
+                } else {
+                    vec![user.clone()]
+                },
+                has_qr: true,
+                qr_url: Some(tunnel_url.clone()),
+            };
+
+            let events = ts.events.take().unwrap();
+            let qf = quit_flag.clone();
+
+            ts.handle = Some(std::thread::spawn(move || {
+                run_tui_loop(banner, max_logs, visible_rows, events, &qf);
+            }));
+        }
+    } else if !use_tui && first_connect {
+        legacy_print_banner(&tunnel_url, port, &user);
+    }
 
     let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     let ws_relays: Arc<
         dashmap::DashMap<xpo_core::StreamId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     > = Arc::new(dashmap::DashMap::new());
-    let log_state = Arc::new(std::sync::Mutex::new(LogState::new(max_logs)));
 
     loop {
+        if quit_flag.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         tokio::select! {
             msg = tokio::time::timeout(
                 std::time::Duration::from_secs(HEARTBEAT_TIMEOUT_SECS),
@@ -139,9 +213,9 @@ async fn connect_and_run(
                                         let payload = packet.payload;
                                         let tx = resp_tx.clone();
                                         let relays = ws_relays.clone();
-                                        let ls = log_state.clone();
+                                        let event_tx = app_tx.clone();
                                         tokio::spawn(async move {
-                                            let result = proxy_to_upstream(port, &payload, stream_id, &ls, cors).await;
+                                            let result = proxy_to_upstream(port, &payload, stream_id, &event_tx, cors).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
                                             let _ = tx.send(Message::Binary(resp_pkt.encode().into()));
                                             if let Some(relay) = result.ws_relay {
@@ -214,6 +288,85 @@ async fn connect_and_run(
     }
 }
 
+fn run_tui_loop(
+    banner: BannerInfo,
+    max_logs: usize,
+    visible_rows: usize,
+    events: xpo_tui::event::EventHandler,
+    quit_flag: &Arc<AtomicBool>,
+) {
+    let mut terminal = match TuiApp::init_terminal() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let mut app = TuiApp::new(banner, max_logs, visible_rows);
+
+    loop {
+        let _ = terminal.draw(|frame| xpo_tui::render::draw(frame, &app));
+
+        match events.next() {
+            Ok(event) => {
+                app.handle_event(event);
+                if app.should_quit {
+                    quit_flag.store(true, Ordering::Relaxed);
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    let summary = app.summary_line();
+    drop(terminal);
+    TuiApp::restore_terminal();
+    print!("\r\x1b[2K");
+    println!("{summary}");
+}
+
+fn legacy_print_banner(url: &str, port: u16, user: &str) {
+    let d = "\x1b[2m";
+    let b = "\x1b[1m";
+    let c = "\x1b[36;1m";
+    let r = "\x1b[0m";
+
+    let line1 = "xpo share";
+    let line2 = format!("{url} -> localhost:{port}");
+    let line3 = if user.is_empty() {
+        "Ctrl+C to stop".to_string()
+    } else {
+        format!("{user} - Ctrl+C to stop")
+    };
+
+    let inner = line1.len().max(line2.len()).max(line3.len()) + 4;
+    let border = "\u{2500}".repeat(inner);
+    let empty = " ".repeat(inner);
+
+    let pad1 = inner - line1.len() - 2;
+    let pad2 = inner - line2.len() - 2;
+    let pad3 = inner - line3.len() - 2;
+
+    println!();
+    println!("  {d}\u{256d}{border}\u{256e}{r}");
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {b}{line1}{r}{}{d}\u{2502}{r}",
+        " ".repeat(pad1)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {c}{url}{r} -> localhost:{port}{}{d}\u{2502}{r}",
+        " ".repeat(pad2)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!(
+        "  {d}\u{2502}{r}  {d}{line3}{r}{}{d}\u{2502}{r}",
+        " ".repeat(pad3)
+    );
+    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
+    println!("  {d}\u{2570}{border}\u{256f}{r}");
+    println!();
+}
+
 struct ProxyResult {
     response: Vec<u8>,
     ws_relay: Option<WsRelay>,
@@ -224,18 +377,26 @@ struct WsRelay {
     upstream: TcpStream,
 }
 
+static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 async fn proxy_to_upstream(
     port: u16,
     raw_request: &[u8],
     stream_id: xpo_core::StreamId,
-    log_state: &Arc<std::sync::Mutex<LogState>>,
+    event_tx: &std::sync::mpsc::Sender<AppEvent>,
     cors: bool,
 ) -> ProxyResult {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let start = std::time::Instant::now();
+
+    let req_str = String::from_utf8_lossy(raw_request);
+    let parts: Vec<&str> = req_str.split_whitespace().collect();
+    let method = parts.first().copied().unwrap_or("???").to_string();
+    let path = parts.get(1).copied().unwrap_or("/").to_string();
 
     if cors && is_cors_preflight(raw_request) {
         let response = build_cors_preflight_response();
-        log_request(log_state, raw_request, &response);
+        send_request_log(event_tx, &method, &path, 204, start.elapsed());
         return ProxyResult {
             response,
             ws_relay: None,
@@ -250,6 +411,7 @@ async fn proxy_to_upstream(
     let mut upstream = match TcpStream::connect(("localhost", port)).await {
         Ok(s) => s,
         Err(_) => {
+            send_request_log(event_tx, &method, &path, 502, start.elapsed());
             return ProxyResult {
                 response: crate::error_page::error_response(502, "upstream is down", ".sh"),
                 ws_relay: None,
@@ -265,6 +427,7 @@ async fn proxy_to_upstream(
     };
 
     if upstream.write_all(&request_bytes).await.is_err() {
+        send_request_log(event_tx, &method, &path, 502, start.elapsed());
         return ProxyResult {
             response: crate::error_page::error_response(502, "upstream is down", ".sh"),
             ws_relay: None,
@@ -287,7 +450,8 @@ async fn proxy_to_upstream(
                     if cors {
                         response = inject_cors_headers(&response);
                     }
-                    log_request(log_state, raw_request, &response);
+                    let status = parse_response_status(&response);
+                    send_request_log(event_tx, &method, &path, status, start.elapsed());
                     return ProxyResult {
                         response,
                         ws_relay: Some(WsRelay {
@@ -307,11 +471,43 @@ async fn proxy_to_upstream(
     if cors {
         response = inject_cors_headers(&response);
     }
-    log_request(log_state, raw_request, &response);
+    let status = parse_response_status(&response);
+    send_request_log(event_tx, &method, &path, status, start.elapsed());
     ProxyResult {
         response,
         ws_relay: None,
     }
+}
+
+fn parse_response_status(raw_response: &[u8]) -> u16 {
+    let resp_str = String::from_utf8_lossy(raw_response);
+    resp_str
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+fn send_request_log(
+    tx: &std::sync::mpsc::Sender<AppEvent>,
+    method: &str,
+    path: &str,
+    status: u16,
+    duration: std::time::Duration,
+) {
+    let log = RequestLog {
+        id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed),
+        timestamp: time::OffsetDateTime::now_utc(),
+        method: method.to_string(),
+        path: path.to_string(),
+        status,
+        duration_ms: duration.as_millis() as u64,
+        request_headers: vec![],
+        response_headers: vec![],
+        body_preview: None,
+        body_size: 0,
+    };
+    let _ = tx.send(AppEvent::Request(log));
 }
 
 const CORS_HEADERS: &str = "\
@@ -457,138 +653,6 @@ fn inject_connection_close(raw: &[u8]) -> Vec<u8> {
     patched
 }
 
-fn log_request(state: &Arc<std::sync::Mutex<LogState>>, raw_request: &[u8], raw_response: &[u8]) {
-    let req_str = String::from_utf8_lossy(raw_request);
-    let parts: Vec<&str> = req_str.split_whitespace().collect();
-    let method = parts.first().copied().unwrap_or("???");
-    let path = parts.get(1).copied().unwrap_or("/");
-
-    let resp_str = String::from_utf8_lossy(raw_response);
-    let status = resp_str.split_whitespace().nth(1).unwrap_or("---");
-
-    let status_code: u16 = status.parse().unwrap_or(0);
-    let styled_status = if status_code >= 500 {
-        style(status).red().bold()
-    } else if status_code >= 400 {
-        style(status).yellow()
-    } else if status_code >= 300 {
-        style(status).cyan()
-    } else if status_code >= 200 {
-        style(status).green()
-    } else {
-        style(status).dim()
-    };
-
-    let line = format!("  {:<6} {} {}", style(method).bold(), path, styled_status);
-
-    let mut state = state.lock().unwrap();
-    state.entries.push_back(line);
-    if state.max > 0 && state.entries.len() > state.max {
-        state.entries.pop_front();
-    }
-
-    if state.displayed > 0 {
-        print!("\x1b[{}A\x1b[J", state.displayed);
-    }
-    for entry in &state.entries {
-        println!("{entry}");
-    }
-    use std::io::Write;
-    std::io::stdout().flush().ok();
-    state.displayed = state.entries.len();
-}
-
-fn print_banner(url: &str, port: u16, user: &str) {
-    let d = "\x1b[2m";
-    let b = "\x1b[1m";
-    let c = "\x1b[36;1m";
-    let r = "\x1b[0m";
-
-    let line1 = "xpo share";
-    let line2 = format!("{url} -> localhost:{port}");
-    let line3 = if user.is_empty() {
-        "Ctrl+C to stop".to_string()
-    } else {
-        format!("{user} - Ctrl+C to stop")
-    };
-
-    let inner = line1.len().max(line2.len()).max(line3.len()) + 4;
-    let border = "\u{2500}".repeat(inner);
-    let empty = " ".repeat(inner);
-
-    let pad1 = inner - line1.len() - 2;
-    let pad2 = inner - line2.len() - 2;
-    let pad3 = inner - line3.len() - 2;
-
-    println!();
-    println!("  {d}\u{256d}{border}\u{256e}{r}");
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {b}{line1}{r}{}{d}\u{2502}{r}",
-        " ".repeat(pad1)
-    );
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {c}{url}{r} -> localhost:{port}{}{d}\u{2502}{r}",
-        " ".repeat(pad2)
-    );
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {d}{line3}{r}{}{d}\u{2502}{r}",
-        " ".repeat(pad3)
-    );
-    println!("  {d}\u{2502}{r}{empty}{d}\u{2502}{r}");
-    println!("  {d}\u{2570}{border}\u{256f}{r}");
-
-    print_qr(url);
-
-    println!();
-}
-
-fn print_qr(url: &str) {
-    use fast_qr::qr::QRBuilder;
-
-    let Ok(qr) = QRBuilder::new(url).build() else {
-        return;
-    };
-
-    let qr_lines: Vec<&str> = qr.to_str().leak().lines().collect();
-    if qr_lines.is_empty() {
-        return;
-    }
-
-    let d = "\x1b[2m";
-    let c = "\x1b[36m";
-    let r = "\x1b[0m";
-
-    let qr_width = qr_lines
-        .iter()
-        .map(|l| l.chars().count())
-        .max()
-        .unwrap_or(0);
-    let label = "Scan to open";
-    let inner = qr_width.max(label.len()) + 4;
-    let border = "\u{2500}".repeat(inner);
-
-    let label_pad = inner - label.len() - 2;
-    println!("  {d}\u{256d}{border}\u{256e}{r}");
-    println!(
-        "  {d}\u{2502}{r}  {d}{label}{r}{}{d}\u{2502}{r}",
-        " ".repeat(label_pad)
-    );
-    println!("  {d}\u{2502}{r}{}{d}\u{2502}{r}", " ".repeat(inner));
-    for line in &qr_lines {
-        let line_width = line.chars().count();
-        let pad = inner - line_width - 2;
-        println!(
-            "  {d}\u{2502}{r} {c}{line}{r}{}{d}\u{2502}{r}",
-            " ".repeat(pad + 1)
-        );
-    }
-    println!("  {d}\u{2502}{r}{}{d}\u{2502}{r}", " ".repeat(inner));
-    println!("  {d}\u{2570}{border}\u{256f}{r}");
-}
-
 async fn get_token() -> String {
     match crate::auth::get_token().await {
         Ok(token) => token,
@@ -728,7 +792,7 @@ mod tests {
         assert!(qr.is_ok());
         let qr_str = qr.unwrap().to_str();
         assert!(!qr_str.is_empty());
-        assert!(qr_str.contains('█'));
+        assert!(qr_str.contains('\u{2588}'));
     }
 
     #[test]
