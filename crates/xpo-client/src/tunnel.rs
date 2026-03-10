@@ -701,6 +701,34 @@ fn parse_raw_request(raw: &[u8]) -> Option<(String, String, Vec<(String, String)
     Some((method, path, headers, body))
 }
 
+#[allow(dead_code)]
+fn serialize_response(
+    status: u16,
+    reason: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut raw = format!("HTTP/1.1 {status} {reason}\r\n");
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        raw.push_str(name);
+        raw.push_str(": ");
+        raw.push_str(value);
+        raw.push_str("\r\n");
+    }
+    raw.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    raw.push_str("\r\n");
+
+    let mut bytes = raw.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
 async fn get_token() -> String {
     match crate::auth::get_token().await {
         Ok(token) => token,
@@ -963,5 +991,57 @@ mod tests {
         raw.extend_from_slice(binary);
         let (_, _, _, body) = parse_raw_request(&raw).unwrap();
         assert_eq!(body, binary);
+    }
+
+    #[test]
+    fn serialize_response_basic() {
+        let headers = vec![("Content-Type".to_string(), "text/plain".to_string())];
+        let body = b"hello";
+        let raw = serialize_response(200, "OK", &headers, body);
+        let s = String::from_utf8_lossy(&raw);
+        assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(s.contains("Content-Type: text/plain\r\n"));
+        assert!(s.contains("Content-Length: 5\r\n"));
+        assert!(s.contains("\r\n\r\nhello"));
+    }
+
+    #[test]
+    fn serialize_response_strips_transfer_encoding() {
+        let headers = vec![
+            ("Transfer-Encoding".to_string(), "chunked".to_string()),
+            ("Content-Encoding".to_string(), "gzip".to_string()),
+        ];
+        let raw = serialize_response(200, "OK", &headers, b"data");
+        let s = String::from_utf8_lossy(&raw);
+        assert!(!s.contains("Transfer-Encoding"));
+        assert!(s.contains("Content-Encoding: gzip"));
+        assert!(s.contains("Content-Length: 4"));
+    }
+
+    #[test]
+    fn serialize_response_strips_content_length() {
+        let headers = vec![("Content-Length".to_string(), "999".to_string())];
+        let raw = serialize_response(200, "OK", &headers, b"hi");
+        let s = String::from_utf8_lossy(&raw);
+        assert!(s.contains("Content-Length: 2\r\n"));
+        let count = s.matches("Content-Length").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn serialize_response_empty_body() {
+        let raw = serialize_response(204, "No Content", &[], b"");
+        let s = String::from_utf8_lossy(&raw);
+        assert!(s.starts_with("HTTP/1.1 204 No Content\r\n"));
+        assert!(s.contains("Content-Length: 0\r\n"));
+    }
+
+    #[test]
+    fn serialize_response_preserves_binary_body() {
+        let body: &[u8] = &[0x00, 0x1F, 0x8B, 0x08, 0xFF];
+        let raw = serialize_response(200, "OK", &[], body);
+        let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let actual_body = &raw[header_end + 4..];
+        assert_eq!(actual_body, body);
     }
 }
