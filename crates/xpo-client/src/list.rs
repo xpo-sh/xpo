@@ -64,15 +64,18 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else if entries.is_empty() {
-        println!("  No active tunnels or local domains found.");
+        xpo_tui::widgets::list_table::render_empty();
     } else {
-        println!("  {:<8} {:<24} {:<20} STATUS", "TYPE", "DOMAIN", "TARGET");
-        for e in &entries {
-            println!(
-                "  {:<8} {:<24} {:<20} {}",
-                e.kind, e.domain, e.target, e.status
-            );
-        }
+        let rows: Vec<xpo_tui::widgets::list_table::ListRow> = entries
+            .iter()
+            .map(|e| xpo_tui::widgets::list_table::ListRow {
+                kind: e.kind.clone(),
+                domain: e.domain.clone(),
+                target: e.target.clone(),
+                status: e.status.clone(),
+            })
+            .collect();
+        xpo_tui::widgets::list_table::render_list_table(&rows)?;
     }
 
     Ok(())
