@@ -119,6 +119,7 @@ pub(crate) fn is_ca_trusted() -> bool {
     false
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn pf_output_has_forwarding(output: &[u8]) -> bool {
     let s = String::from_utf8_lossy(output);
     s.contains("10443") && s.contains("10080")
