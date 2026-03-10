@@ -1,10 +1,7 @@
 use std::io::{self, stdout};
 use std::sync::mpsc;
 
-use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers, MouseButton, MouseEventKind,
-};
-use crossterm::execute;
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -51,7 +48,6 @@ impl TuiApp {
 
     pub fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
         enable_raw_mode()?;
-        execute!(stdout(), EnableMouseCapture)?;
         let (_, rows) = crossterm::terminal::size()?;
         let height = std::cmp::min(rows.saturating_sub(2), 24);
         let terminal = Terminal::with_options(
@@ -65,7 +61,6 @@ impl TuiApp {
 
     pub fn restore_terminal() {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), DisableMouseCapture);
     }
 
     pub fn create_channel() -> (mpsc::Sender<AppEvent>, EventHandler) {
