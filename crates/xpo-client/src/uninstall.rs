@@ -54,7 +54,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             print_skip("Binary installed via package manager, skipping removal");
             println!(
                 "    {}",
-                console::style("Run: brew uninstall xpo / cargo uninstall xpo / npm uninstall -g @xposh/cli").dim()
+                console::style(
+                    "Run: brew uninstall xpo / cargo uninstall xpo / npm uninstall -g @xposh/cli"
+                )
+                .dim()
             );
         }
     }
@@ -85,7 +88,9 @@ fn print_skip(msg: &str) {
 }
 
 fn is_direct_install(exe_path: &std::path::Path) -> bool {
-    let resolved = exe_path.canonicalize().unwrap_or_else(|_| exe_path.to_path_buf());
+    let resolved = exe_path
+        .canonicalize()
+        .unwrap_or_else(|_| exe_path.to_path_buf());
     let path_str = resolved.to_string_lossy();
 
     let pkg_manager_paths = [
