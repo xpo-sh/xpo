@@ -204,7 +204,7 @@ pub async fn run(
 #[cfg(target_os = "macos")]
 fn spawn_pf_health_check(quit_flag: Arc<AtomicBool>, event_tx: std::sync::mpsc::Sender<AppEvent>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         interval.tick().await;
         loop {
             interval.tick().await;
