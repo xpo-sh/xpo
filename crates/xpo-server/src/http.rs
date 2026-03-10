@@ -20,16 +20,17 @@ pub async fn handle_http(
         .unwrap_or("")
         .to_string();
 
+    let path = req.uri().path();
+    if path == "/healthz" {
+        return Ok(healthz_response(&state));
+    }
+    if path == "/api/tunnels" {
+        return Ok(tunnels_api_response(&state, &req));
+    }
+
     let subdomain = extract_subdomain(&host, &state.config.base_domain);
 
     if subdomain.is_empty() {
-        let path = req.uri().path();
-        if path == "/healthz" {
-            return Ok(healthz_response(&state));
-        }
-        if path == "/api/tunnels" {
-            return Ok(tunnels_api_response(&state, &req));
-        }
         return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found", ""));
     }
 
