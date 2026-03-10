@@ -286,6 +286,7 @@ async fn handle_connection(
             && !msg.contains("early eof")
             && !msg.contains("close_notify")
             && !msg.contains("CertificateUnknown")
+            && !msg.contains("tls handshake eof")
         {
             eprintln!("  {} {msg}", style("\u{2717}").red().dim());
         }

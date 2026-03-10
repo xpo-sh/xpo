@@ -11,6 +11,21 @@ struct ListEntry {
 }
 
 pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        let (rows, json_entries) = fetch_all(true).await;
+        let _ = rows;
+        println!("{}", serde_json::to_string_pretty(&json_entries)?);
+        return Ok(());
+    }
+
+    let (rows, _) = fetch_all(false).await;
+
+    let rt = tokio::runtime::Handle::current();
+    xpo_tui::list_app::run(rows, move || rt.block_on(async { fetch_rows_only().await }))?;
+    Ok(())
+}
+
+async fn fetch_all(json_mode: bool) -> (Vec<ListRow>, Vec<ListEntry>) {
     let mut rows = Vec::new();
     let mut json_entries = Vec::new();
 
@@ -19,7 +34,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(token) = config.auth.access_token.as_deref() {
             let server = std::env::var("XPO_API_SERVER")
                 .unwrap_or_else(|_| format!("https://{}", config.defaults.server));
-            let spinner_handle = if !json {
+            let spinner_handle = if !json_mode {
                 Some(tokio::spawn(async {
                     let frames = [
                         "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}",
@@ -27,7 +42,10 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
                     ];
                     let mut i = 0;
                     loop {
-                        eprint!("\r\x1b[38;2;88;166;255m  {} \x1b[38;2;139;148;158mFetching tunnels...\x1b[0m", frames[i % frames.len()]);
+                        eprint!(
+                            "\r\x1b[38;2;88;166;255m  {} \x1b[38;2;139;148;158mFetching tunnels...\x1b[0m",
+                            frames[i % frames.len()]
+                        );
                         i += 1;
                         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
                     }
@@ -35,64 +53,103 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(2))
-                .build()
-                .unwrap_or_default();
-            let api_result = client
-                .get(format!("{}/api/tunnels", server))
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await;
+            let (r, j) = fetch_remote(token, &server).await;
+            rows.extend(r);
+            json_entries.extend(j);
             if let Some(handle) = spinner_handle {
                 handle.abort();
                 eprint!("\r\x1b[2K");
             }
-            if let Ok(resp) = api_result {
-                if let Ok(tunnels) = resp.json::<Vec<serde_json::Value>>().await {
-                    for t in tunnels {
-                        let subdomain = t["subdomain"].as_str().unwrap_or("?");
-                        let url = t["url"].as_str().unwrap_or("?").to_string();
-                        let port = t["port"].as_u64().unwrap_or(0);
-                        let has_password = t["has_password"].as_bool().unwrap_or(false);
-                        let ttl_secs = t["ttl_secs"].as_u64();
-                        let ttl_remaining = t["ttl_remaining_secs"].as_u64();
-                        let uptime = t["created_at_secs"].as_u64().unwrap_or(0);
+        }
+    }
 
-                        let mut details = Vec::new();
-                        details.push(("Subdomain".to_string(), subdomain.to_string()));
-                        details.push((
-                            "Password".to_string(),
-                            if has_password { "yes" } else { "no" }.to_string(),
-                        ));
-                        if let Some(ttl) = ttl_secs {
-                            details.push(("TTL".to_string(), format_duration(ttl)));
-                        }
-                        if let Some(rem) = ttl_remaining {
-                            details.push(("Remaining".to_string(), format_duration(rem)));
-                        }
-                        details.push(("Uptime".to_string(), format_duration(uptime)));
+    let (r, j) = fetch_local().await;
+    rows.extend(r);
+    json_entries.extend(j);
 
-                        let target = format!("localhost:{}", port);
-                        rows.push(ListRow {
-                            kind: "share".to_string(),
-                            domain: url.clone(),
-                            target: target.clone(),
-                            status: "active".to_string(),
-                            details,
-                        });
-                        json_entries.push(ListEntry {
-                            kind: "share".to_string(),
-                            domain: url,
-                            target,
-                            status: "active".to_string(),
-                        });
-                    }
+    (rows, json_entries)
+}
+
+async fn fetch_rows_only() -> Vec<ListRow> {
+    let mut rows = Vec::new();
+
+    let config = xpo_core::config::Config::load().unwrap_or_default();
+    if config.is_authenticated() {
+        if let Some(token) = config.auth.access_token.as_deref() {
+            let server = std::env::var("XPO_API_SERVER")
+                .unwrap_or_else(|_| format!("https://{}", config.defaults.server));
+            let (r, _) = fetch_remote(token, &server).await;
+            rows.extend(r);
+        }
+    }
+
+    let (r, _) = fetch_local().await;
+    rows.extend(r);
+    rows
+}
+
+async fn fetch_remote(token: &str, server: &str) -> (Vec<ListRow>, Vec<ListEntry>) {
+    let mut rows = Vec::new();
+    let mut json_entries = Vec::new();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
+    if let Ok(resp) = client
+        .get(format!("{}/api/tunnels", server))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+    {
+        if let Ok(tunnels) = resp.json::<Vec<serde_json::Value>>().await {
+            for t in tunnels {
+                let subdomain = t["subdomain"].as_str().unwrap_or("?");
+                let url = t["url"].as_str().unwrap_or("?").to_string();
+                let port = t["port"].as_u64().unwrap_or(0);
+                let has_password = t["has_password"].as_bool().unwrap_or(false);
+                let ttl_secs = t["ttl_secs"].as_u64();
+                let ttl_remaining = t["ttl_remaining_secs"].as_u64();
+                let uptime = t["created_at_secs"].as_u64().unwrap_or(0);
+
+                let mut details = Vec::new();
+                details.push(("Subdomain".to_string(), subdomain.to_string()));
+                details.push((
+                    "Password".to_string(),
+                    if has_password { "yes" } else { "no" }.to_string(),
+                ));
+                if let Some(ttl) = ttl_secs {
+                    details.push(("TTL".to_string(), format_duration(ttl)));
                 }
+                if let Some(rem) = ttl_remaining {
+                    details.push(("Remaining".to_string(), format_duration(rem)));
+                }
+                details.push(("Uptime".to_string(), format_duration(uptime)));
+
+                let target = format!("localhost:{}", port);
+                rows.push(ListRow {
+                    kind: "share".to_string(),
+                    domain: url.clone(),
+                    target: target.clone(),
+                    status: "active".to_string(),
+                    details,
+                });
+                json_entries.push(ListEntry {
+                    kind: "share".to_string(),
+                    domain: url,
+                    target,
+                    status: "active".to_string(),
+                });
             }
         }
     }
-    drop(config);
+
+    (rows, json_entries)
+}
+
+async fn fetch_local() -> (Vec<ListRow>, Vec<ListEntry>) {
+    let mut rows = Vec::new();
+    let mut json_entries = Vec::new();
 
     let hosts_content = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
     let test_domains = parse_test_domains(&hosts_content);
@@ -118,7 +175,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
         rows.push(ListRow {
             kind: "dev".to_string(),
-            domain: domain.clone(),
+            domain: format!("https://{}", domain),
             target: format!("https://{}", domain),
             status: status.to_string(),
             details,
@@ -131,13 +188,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&json_entries)?);
-        return Ok(());
-    }
-
-    xpo_tui::list_app::run(rows)?;
-    Ok(())
+    (rows, json_entries)
 }
 
 fn format_duration(secs: u64) -> String {
