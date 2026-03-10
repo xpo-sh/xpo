@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.11-alpha"
+version = "0.2.12-alpha"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/xpo-sh/xpo"
