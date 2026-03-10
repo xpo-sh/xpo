@@ -65,6 +65,21 @@ fn collect_port_forwarding_checks(checks: &mut Vec<DoctorCheck>) {
             "missing anchor".to_string()
         },
     });
+
+    let runtime_active = crate::dev::setup::verify_pf_runtime_state();
+    checks.push(DoctorCheck {
+        name: "Port forwarding runtime".to_string(),
+        status: if runtime_active {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        detail: if runtime_active {
+            String::new()
+        } else {
+            "rules not loaded - run: sudo pfctl -ef /etc/pf.conf".to_string()
+        },
+    });
 }
 
 #[cfg(target_os = "linux")]
