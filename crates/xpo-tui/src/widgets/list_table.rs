@@ -1,135 +1,226 @@
-use std::io;
+use ratatui::{
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    Frame,
+};
+
+use crate::theme::Theme;
 
 pub struct ListRow {
     pub kind: String,
     pub domain: String,
     pub target: String,
     pub status: String,
+    pub details: Vec<(String, String)>,
 }
 
-fn color(r: u8, g: u8, b: u8) -> String {
-    format!("\x1b[38;2;{r};{g};{b}m")
+pub struct ListTuiState {
+    pub items: Vec<ListRow>,
+    pub list_state: ListState,
 }
 
-pub fn render_list_table(rows: &[ListRow]) -> io::Result<()> {
-    let r = "\x1b[0m";
-    let b = "\x1b[1m";
-    let bd = color(72, 79, 88);
-    let tx = color(230, 237, 243);
-    let dm = color(139, 148, 158);
-    let ac = color(88, 166, 255);
-    let ok = color(126, 231, 135);
-    let er = color(248, 81, 73);
-    let wn = color(224, 175, 104);
-
-    let tw = rows.iter().map(|r| r.kind.len()).max().unwrap_or(4).max(4);
-    let dw = rows
-        .iter()
-        .map(|r| r.domain.len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
-    let gw = rows
-        .iter()
-        .map(|r| r.target.len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
-
-    let content_width = 1 + tw + 2 + dw + 2 + gw + 2 + 8 + 1;
-    let hr = "\u{2500}".repeat(content_width);
-
-    println!();
-    println!("  {bd}\u{256d}{hr}\u{256e}{r}");
-
-    let title = "xpo list";
-    let title_pad = content_width - 1 - title.len();
-    println!(
-        "  {bd}\u{2502}{r} {ac}{b}{title}{r}{}{bd}\u{2502}{r}",
-        " ".repeat(title_pad)
-    );
-
-    println!("  {bd}\u{251c}{hr}\u{2524}{r}");
-
-    let hdr_pad = content_width - 1 - tw - 2 - dw - 2 - gw - 2 - 8;
-    println!(
-        "  {bd}\u{2502}{r} {dm}{:<tw$}  {:<dw$}  {:<gw$}  {:<8}{r}{}{bd}\u{2502}{r}",
-        "TYPE",
-        "DOMAIN",
-        "TARGET",
-        "STATUS",
-        " ".repeat(hdr_pad),
-    );
-
-    for row in rows {
-        let (icon, ic) = match row.status.as_str() {
-            "active" => ("\u{25cf} active", &ok),
-            "inactive" => ("\u{25cb} inact.", &er),
-            _ => ("? unkn.", &wn),
-        };
-        let row_pad = content_width - 1 - tw - 2 - dw - 2 - gw - 2 - 8;
-        let kind_color = match row.kind.as_str() {
-            "share" => &ac,
-            "dev" => &wn,
-            _ => &tx,
-        };
-        println!(
-            "  {bd}\u{2502}{r} {kind_color}{:<tw$}{r}  {tx}{:<dw$}{r}  {dm}{:<gw$}{r}  {ic}{:<8}{r}{}{bd}\u{2502}{r}",
-            row.kind,
-            row.domain,
-            row.target,
-            icon,
-            " ".repeat(row_pad),
-        );
+impl ListTuiState {
+    pub fn new(items: Vec<ListRow>) -> Self {
+        let mut list_state = ListState::default();
+        if !items.is_empty() {
+            list_state.select(Some(0));
+        }
+        Self { items, list_state }
     }
 
-    let summary = format!(
-        "{} tunnel(s), {} dev domain(s)",
-        rows.iter().filter(|r| r.kind == "share").count(),
-        rows.iter().filter(|r| r.kind == "dev").count(),
-    );
-    println!("  {bd}\u{251c}{hr}\u{2524}{r}");
-    let sum_pad = content_width - 1 - summary.len();
-    println!(
-        "  {bd}\u{2502}{r} {dm}{summary}{r}{}{bd}\u{2502}{r}",
-        " ".repeat(sum_pad),
-    );
+    pub fn next(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => (i + 1) % self.items.len(),
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
 
-    println!("  {bd}\u{2570}{hr}\u{256f}{r}");
-    println!();
+    pub fn previous(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
 
-    Ok(())
+    pub fn selected(&self) -> Option<&ListRow> {
+        self.list_state.selected().and_then(|i| self.items.get(i))
+    }
 }
 
-pub fn render_empty() {
-    let r = "\x1b[0m";
-    let b = "\x1b[1m";
-    let bd = color(72, 79, 88);
-    let ac = color(88, 166, 255);
-    let dm = color(139, 148, 158);
+pub fn render(frame: &mut Frame, area: Rect, state: &mut ListTuiState) {
+    if state.items.is_empty() {
+        let block = Block::default()
+            .title(Line::from(vec![Span::styled(
+                " xpo list ",
+                Theme::accent_bold(),
+            )]))
+            .borders(Borders::ALL)
+            .border_style(Theme::border());
+        let msg = Paragraph::new(Line::from(vec![Span::styled(
+            "No active tunnels or dev domains",
+            Theme::text_dim(),
+        )]))
+        .block(block);
+        frame.render_widget(msg, area);
+        return;
+    }
 
-    let content_width = 42;
-    let hr = "\u{2500}".repeat(content_width);
+    let chunks =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
 
-    println!();
-    println!("  {bd}\u{256d}{hr}\u{256e}{r}");
+    render_list_panel(frame, chunks[0], state);
+    render_detail_panel(frame, chunks[1], state);
+}
 
-    let title = "xpo list";
-    let title_pad = content_width - 1 - title.len();
-    println!(
-        "  {bd}\u{2502}{r} {ac}{b}{title}{r}{}{bd}\u{2502}{r}",
-        " ".repeat(title_pad)
-    );
+fn render_list_panel(frame: &mut Frame, area: Rect, state: &mut ListTuiState) {
+    let items: Vec<ListItem> = state
+        .items
+        .iter()
+        .map(|row| {
+            let kind_style = match row.kind.as_str() {
+                "share" => Style::default().fg(Theme::ACCENT),
+                "dev" => Style::default().fg(Theme::METHOD_PUT),
+                _ => Theme::text(),
+            };
+            let status_style = match row.status.as_str() {
+                "active" => Theme::success(),
+                _ => Theme::error(),
+            };
+            let icon = match row.status.as_str() {
+                "active" => "\u{25cf}",
+                _ => "\u{25cb}",
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(icon, status_style),
+                Span::raw(" "),
+                Span::styled(format!("{:<5}", row.kind), kind_style),
+                Span::raw(" "),
+                Span::styled(&row.domain, Theme::text()),
+            ]))
+        })
+        .collect();
 
-    println!("  {bd}\u{251c}{hr}\u{2524}{r}");
+    let count = state.items.len();
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" xpo list ", Theme::accent_bold()),
+            Span::styled(format!("({count}) "), Theme::text_dim()),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(Theme::border());
 
-    let msg = "No active tunnels or dev domains";
-    let msg_pad = content_width - 1 - msg.len();
-    println!(
-        "  {bd}\u{2502}{r} {dm}{msg}{r}{}{bd}\u{2502}{r}",
-        " ".repeat(msg_pad),
-    );
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .fg(Theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
 
-    println!("  {bd}\u{2570}{hr}\u{256f}{r}");
-    println!();
+    frame.render_stateful_widget(list, area, &mut state.list_state);
+}
+
+fn render_detail_panel(frame: &mut Frame, area: Rect, state: &ListTuiState) {
+    let block = Block::default()
+        .title(Line::from(vec![Span::styled(
+            " details ",
+            Theme::accent_bold(),
+        )]))
+        .borders(Borders::ALL)
+        .border_style(Theme::border());
+
+    let Some(row) = state.selected() else {
+        let empty = Paragraph::new("").block(block);
+        frame.render_widget(empty, area);
+        return;
+    };
+
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled("Domain    ", Theme::text_dim()),
+        Span::styled(&row.domain, Theme::accent_bold()),
+    ]));
+    lines.push(Line::raw(""));
+
+    let kind_style = match row.kind.as_str() {
+        "share" => Style::default().fg(Theme::ACCENT),
+        "dev" => Style::default().fg(Theme::METHOD_PUT),
+        _ => Theme::text(),
+    };
+    lines.push(Line::from(vec![
+        Span::styled("Type      ", Theme::text_dim()),
+        Span::styled(&row.kind, kind_style),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("Target    ", Theme::text_dim()),
+        Span::styled(&row.target, Theme::text()),
+    ]));
+
+    let status_style = match row.status.as_str() {
+        "active" => Theme::success(),
+        _ => Theme::error(),
+    };
+    let icon = match row.status.as_str() {
+        "active" => "\u{25cf} ",
+        _ => "\u{25cb} ",
+    };
+    lines.push(Line::from(vec![
+        Span::styled("Status    ", Theme::text_dim()),
+        Span::styled(icon, status_style),
+        Span::styled(&row.status, status_style),
+    ]));
+
+    if !row.details.is_empty() {
+        lines.push(Line::raw(""));
+        for (key, val) in &row.details {
+            let val_style = match key.as_str() {
+                "Password" => {
+                    if val == "yes" {
+                        Theme::success()
+                    } else {
+                        Theme::text_dim()
+                    }
+                }
+                "TTL" => Style::default().fg(Theme::METHOD_PUT),
+                "Cert" => Theme::text_dim(),
+                _ => Theme::text(),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", key), Theme::text_dim()),
+                Span::styled(val.as_str(), val_style),
+            ]));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+pub fn render_keybinds(frame: &mut Frame, area: Rect) {
+    let keys = Line::from(vec![
+        Span::styled("q", Theme::accent()),
+        Span::styled(":quit  ", Theme::text_dim()),
+        Span::styled("\u{2191}\u{2193}", Theme::accent()),
+        Span::styled(":navigate", Theme::text_dim()),
+    ]);
+    frame.render_widget(Paragraph::new(keys), area);
 }

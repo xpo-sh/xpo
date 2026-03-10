@@ -1,4 +1,5 @@
 use serde::Serialize;
+use xpo_tui::widgets::list_table::ListRow;
 
 #[derive(Serialize)]
 struct ListEntry {
@@ -10,7 +11,8 @@ struct ListEntry {
 }
 
 pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut entries = Vec::new();
+    let mut rows = Vec::new();
+    let mut json_entries = Vec::new();
 
     let config = xpo_core::config::Config::load().unwrap_or_default();
     if config.is_authenticated() && !config.is_expired() {
@@ -27,15 +29,41 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(tunnels) = resp.json::<Vec<serde_json::Value>>().await {
                     for t in tunnels {
                         let subdomain = t["subdomain"].as_str().unwrap_or("?");
-                        let url = t["url"].as_str().unwrap_or("?");
+                        let url = t["url"].as_str().unwrap_or("?").to_string();
                         let port = t["port"].as_u64().unwrap_or(0);
-                        entries.push(ListEntry {
+                        let has_password = t["has_password"].as_bool().unwrap_or(false);
+                        let ttl_secs = t["ttl_secs"].as_u64();
+                        let ttl_remaining = t["ttl_remaining_secs"].as_u64();
+                        let uptime = t["created_at_secs"].as_u64().unwrap_or(0);
+
+                        let mut details = Vec::new();
+                        details.push(("Subdomain".to_string(), subdomain.to_string()));
+                        details.push((
+                            "Password".to_string(),
+                            if has_password { "yes" } else { "no" }.to_string(),
+                        ));
+                        if let Some(ttl) = ttl_secs {
+                            details.push(("TTL".to_string(), format_duration(ttl)));
+                        }
+                        if let Some(rem) = ttl_remaining {
+                            details.push(("Remaining".to_string(), format_duration(rem)));
+                        }
+                        details.push(("Uptime".to_string(), format_duration(uptime)));
+
+                        let target = format!("localhost:{}", port);
+                        rows.push(ListRow {
                             kind: "share".to_string(),
-                            domain: url.to_string(),
-                            target: format!("localhost:{}", port),
+                            domain: url.clone(),
+                            target: target.clone(),
+                            status: "active".to_string(),
+                            details,
+                        });
+                        json_entries.push(ListEntry {
+                            kind: "share".to_string(),
+                            domain: url,
+                            target,
                             status: "active".to_string(),
                         });
-                        let _ = subdomain;
                     }
                 }
             }
@@ -45,40 +73,53 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let hosts_content = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
     let test_domains = parse_test_domains(&hosts_content);
     for domain in test_domains {
-        let port = 443u16;
-        let active = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        let active = tokio::net::TcpStream::connect("127.0.0.1:10443")
             .await
             .is_ok();
-        entries.push(ListEntry {
+        let status = if active { "active" } else { "inactive" };
+
+        let mut details = Vec::new();
+        let cert_path = xpo_core::config::Config::dir()
+            .join("ca/certs")
+            .join(format!("{}.pem", domain));
+        if cert_path.exists() {
+            details.push(("Cert".to_string(), cert_path.display().to_string()));
+        }
+        details.push(("Hosts".to_string(), "/etc/hosts".to_string()));
+        details.push(("Proxy".to_string(), "https -> localhost:10443".to_string()));
+
+        rows.push(ListRow {
             kind: "dev".to_string(),
             domain: domain.clone(),
-            target: format!("localhost:{}", port),
-            status: if active {
-                "active".to_string()
-            } else {
-                "inactive".to_string()
-            },
+            target: format!("https://{}", domain),
+            status: status.to_string(),
+            details,
+        });
+        json_entries.push(ListEntry {
+            kind: "dev".to_string(),
+            domain,
+            target: "https (local proxy)".to_string(),
+            status: status.to_string(),
         });
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-    } else if entries.is_empty() {
-        xpo_tui::widgets::list_table::render_empty();
-    } else {
-        let rows: Vec<xpo_tui::widgets::list_table::ListRow> = entries
-            .iter()
-            .map(|e| xpo_tui::widgets::list_table::ListRow {
-                kind: e.kind.clone(),
-                domain: e.domain.clone(),
-                target: e.target.clone(),
-                status: e.status.clone(),
-            })
-            .collect();
-        xpo_tui::widgets::list_table::render_list_table(&rows)?;
+        println!("{}", serde_json::to_string_pretty(&json_entries)?);
+        return Ok(());
     }
 
+    xpo_tui::list_app::run(rows)?;
     Ok(())
+}
+
+fn format_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 fn parse_test_domains(content: &str) -> Vec<String> {
@@ -150,5 +191,20 @@ mod tests {
         let content = "127.0.0.1 myapp.test # added by xpo\n";
         let result = parse_test_domains(content);
         assert_eq!(result, vec!["myapp.test"]);
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(45), "45s");
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        assert_eq!(format_duration(125), "2m 5s");
+    }
+
+    #[test]
+    fn format_duration_hours() {
+        assert_eq!(format_duration(7380), "2h 3m");
     }
 }
