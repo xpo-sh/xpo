@@ -970,6 +970,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humantime"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
 name = "hyper"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3783,6 +3789,7 @@ dependencies = [
  "fast_qr",
  "flate2",
  "futures-util",
+ "humantime",
  "indicatif",
  "rand 0.10.0",
  "rcgen",
@@ -3790,6 +3797,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
