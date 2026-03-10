@@ -8,7 +8,8 @@ use crate::widgets::{banner, help_overlay, keybinds, log_table, qr_panel};
 pub fn draw(frame: &mut Frame, app: &TuiApp) {
     let area = frame.area();
 
-    let banner_height = 5 + app.banner.extra_lines.len() as u16;
+    let ttl_extra = if app.ttl_deadline.is_some() { 1u16 } else { 0 };
+    let banner_height = 5 + app.banner.extra_lines.len() as u16 + ttl_extra;
     let log_height = app.state.visible_rows as u16 + 3;
 
     let has_qr = app.banner.has_qr;
@@ -58,7 +59,13 @@ pub fn draw(frame: &mut Frame, app: &TuiApp) {
     let content_area = vert_layout[1];
     let footer_area = vert_layout[2];
 
-    banner::render(frame, banner_area, &app.banner, &app.state);
+    banner::render(
+        frame,
+        banner_area,
+        &app.banner,
+        &app.state,
+        app.ttl_deadline,
+    );
 
     if qr_width > 0 {
         let h_layout = Layout::default()

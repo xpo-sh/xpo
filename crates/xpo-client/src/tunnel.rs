@@ -188,6 +188,11 @@ async fn connect_and_run(
 
     let _ = app_tx.send(AppEvent::Connection(ConnStatus::Connected));
 
+    if let Some(ttl) = ttl_secs {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(ttl);
+        let _ = app_tx.send(AppEvent::TtlDeadline(deadline));
+    }
+
     if use_tui && first_connect {
         let mut ts = tui_state.lock().unwrap();
         if ts.handle.is_none() {

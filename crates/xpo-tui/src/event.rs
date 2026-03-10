@@ -13,6 +13,7 @@ pub enum AppEvent {
     Request(RequestLog),
     Connection(ConnStatus),
     PfStatus(bool),
+    TtlDeadline(std::time::Instant),
 }
 
 pub struct EventHandler {
