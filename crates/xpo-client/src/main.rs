@@ -30,6 +30,8 @@ enum Commands {
         domain: Option<String>,
         #[arg(long, default_value = "10")]
         logs: usize,
+        #[arg(long)]
+        cors: bool,
     },
     #[command(about = "Local HTTPS development with .test domains")]
     Dev(DevArgs),
@@ -117,10 +119,11 @@ async fn main() {
             subdomain,
             domain: _,
             logs,
+            cors,
         } => {
             let server =
                 std::env::var("XPO_SERVER").unwrap_or_else(|_| "ws.xpo.sh:8081".to_string());
-            tunnel::run(port, subdomain, &server, logs).await
+            tunnel::run(port, subdomain, &server, logs, cors).await
         }
         Commands::Login { provider } => {
             let provider = provider.unwrap_or_else(|| {

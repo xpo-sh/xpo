@@ -29,11 +29,12 @@ pub async fn run(
     subdomain: Option<String>,
     server: &str,
     max_logs: usize,
+    cors: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut backoff = RECONNECT_MIN_SECS;
 
     loop {
-        match connect_and_run(port, subdomain.clone(), server, max_logs).await {
+        match connect_and_run(port, subdomain.clone(), server, max_logs, cors).await {
             Ok(()) => break,
             Err(e) => {
                 let msg = e.to_string();
@@ -66,6 +67,7 @@ async fn connect_and_run(
     subdomain: Option<String>,
     server: &str,
     max_logs: usize,
+    cors: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
         format!("ws://{server}")
@@ -139,7 +141,7 @@ async fn connect_and_run(
                                         let relays = ws_relays.clone();
                                         let ls = log_state.clone();
                                         tokio::spawn(async move {
-                                            let result = proxy_to_upstream(port, &payload, stream_id, &ls).await;
+                                            let result = proxy_to_upstream(port, &payload, stream_id, &ls, cors).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
                                             let _ = tx.send(Message::Binary(resp_pkt.encode().into()));
                                             if let Some(relay) = result.ws_relay {
@@ -227,8 +229,18 @@ async fn proxy_to_upstream(
     raw_request: &[u8],
     stream_id: xpo_core::StreamId,
     log_state: &Arc<std::sync::Mutex<LogState>>,
+    cors: bool,
 ) -> ProxyResult {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    if cors && is_cors_preflight(raw_request) {
+        let response = build_cors_preflight_response();
+        log_request(log_state, raw_request, &response);
+        return ProxyResult {
+            response,
+            ws_relay: None,
+        };
+    }
 
     let is_ws_upgrade = {
         let s = String::from_utf8_lossy(raw_request).to_ascii_lowercase();
@@ -272,6 +284,9 @@ async fn proxy_to_upstream(
                     && response.starts_with(b"HTTP/1.1 101")
                     && response.windows(4).any(|w| w == b"\r\n\r\n")
                 {
+                    if cors {
+                        response = inject_cors_headers(&response);
+                    }
                     log_request(log_state, raw_request, &response);
                     return ProxyResult {
                         response,
@@ -289,11 +304,86 @@ async fn proxy_to_upstream(
         }
     }
 
+    if cors {
+        response = inject_cors_headers(&response);
+    }
     log_request(log_state, raw_request, &response);
     ProxyResult {
         response,
         ws_relay: None,
     }
+}
+
+const CORS_HEADERS: &str = "\
+Access-Control-Allow-Origin: *\r\n\
+Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD\r\n\
+Access-Control-Allow-Headers: Accept, Authorization, Content-Type, X-Requested-With\r\n\
+Access-Control-Allow-Credentials: true\r\n\
+Access-Control-Max-Age: 86400\r\n";
+
+const CORS_HEADER_PREFIXES: &[&str] = &[
+    "access-control-allow-origin:",
+    "access-control-allow-methods:",
+    "access-control-allow-headers:",
+    "access-control-allow-credentials:",
+    "access-control-max-age:",
+    "access-control-expose-headers:",
+];
+
+fn is_cors_preflight(raw_request: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(raw_request);
+    let method = s.split_whitespace().next().unwrap_or("");
+    if !method.eq_ignore_ascii_case("OPTIONS") {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    lower.contains("origin:")
+}
+
+fn build_cors_preflight_response() -> Vec<u8> {
+    format!(
+        "HTTP/1.1 204 No Content\r\n\
+         {CORS_HEADERS}\
+         Content-Length: 0\r\n\
+         \r\n"
+    )
+    .into_bytes()
+}
+
+fn inject_cors_headers(raw_response: &[u8]) -> Vec<u8> {
+    let header_end = match raw_response.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(pos) => pos,
+        None => return raw_response.to_vec(),
+    };
+
+    let header_bytes = &raw_response[..header_end];
+    let body_bytes = &raw_response[header_end + 4..];
+    let header_str = String::from_utf8_lossy(header_bytes);
+
+    let first_crlf = match header_str.find("\r\n") {
+        Some(pos) => pos,
+        None => return raw_response.to_vec(),
+    };
+
+    let mut patched = Vec::with_capacity(raw_response.len() + 512);
+    patched.extend_from_slice(&header_bytes[..first_crlf + 2]);
+
+    for line in header_str[first_crlf + 2..].split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if CORS_HEADER_PREFIXES.iter().any(|p| lower.starts_with(p)) {
+            continue;
+        }
+        patched.extend_from_slice(line.as_bytes());
+        patched.extend_from_slice(b"\r\n");
+    }
+
+    patched.extend_from_slice(CORS_HEADERS.as_bytes());
+    patched.extend_from_slice(b"\r\n");
+    patched.extend_from_slice(body_bytes);
+    patched
 }
 
 fn rewrite_host_header(raw: &[u8], port: u16) -> Vec<u8> {
@@ -639,5 +729,85 @@ mod tests {
         let qr_str = qr.unwrap().to_str();
         assert!(!qr_str.is_empty());
         assert!(qr_str.contains('█'));
+    }
+
+    #[test]
+    fn is_cors_preflight_detects_options_with_origin() {
+        let req = b"OPTIONS /api HTTP/1.1\r\nHost: example.com\r\nOrigin: https://foo.com\r\n\r\n";
+        assert!(is_cors_preflight(req));
+    }
+
+    #[test]
+    fn is_cors_preflight_rejects_options_without_origin() {
+        let req = b"OPTIONS /api HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        assert!(!is_cors_preflight(req));
+    }
+
+    #[test]
+    fn is_cors_preflight_rejects_get_with_origin() {
+        let req = b"GET /api HTTP/1.1\r\nHost: example.com\r\nOrigin: https://foo.com\r\n\r\n";
+        assert!(!is_cors_preflight(req));
+    }
+
+    #[test]
+    fn build_cors_preflight_response_returns_204() {
+        let resp = build_cors_preflight_response();
+        let s = String::from_utf8(resp).unwrap();
+        assert!(s.starts_with("HTTP/1.1 204 No Content\r\n"));
+        assert!(s.contains("Access-Control-Allow-Origin: *"));
+        assert!(s.contains("Access-Control-Allow-Methods:"));
+        assert!(s.contains("Access-Control-Allow-Headers:"));
+        assert!(s.contains("Access-Control-Allow-Credentials: true"));
+        assert!(s.contains("Access-Control-Max-Age: 86400"));
+        assert!(s.contains("Content-Length: 0"));
+        assert!(s.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn inject_cors_headers_adds_all_headers() {
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
+        let patched = inject_cors_headers(resp);
+        let s = String::from_utf8_lossy(&patched);
+        assert!(s.contains("Access-Control-Allow-Origin: *"));
+        assert!(s.contains("Access-Control-Allow-Methods:"));
+        assert!(s.contains("Access-Control-Allow-Headers:"));
+        assert!(s.contains("Access-Control-Allow-Credentials: true"));
+        assert!(s.contains("Access-Control-Max-Age: 86400"));
+        assert!(s.contains("Content-Type: application/json"));
+        assert!(s.contains("{\"ok\":true}"));
+    }
+
+    #[test]
+    fn inject_cors_headers_strips_existing_cors() {
+        let resp = b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: https://old.com\r\nAccess-Control-Allow-Methods: GET\r\nContent-Type: text/html\r\n\r\nhi";
+        let patched = inject_cors_headers(resp);
+        let s = String::from_utf8_lossy(&patched);
+        assert!(!s.contains("https://old.com"));
+        let origin_count = s.matches("Access-Control-Allow-Origin:").count();
+        assert_eq!(origin_count, 1);
+        assert!(s.contains("Access-Control-Allow-Origin: *"));
+        assert!(s.contains("Content-Type: text/html"));
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let body = &patched[header_end + 4..];
+        assert_eq!(body, b"hi");
+    }
+
+    #[test]
+    fn inject_cors_headers_preserves_binary_body() {
+        let body: &[u8] = &[0x00, 0x01, 0xFF, 0xFE];
+        let mut resp =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n".to_vec();
+        resp.extend_from_slice(body);
+        let patched = inject_cors_headers(&resp);
+        let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let actual_body = &patched[header_end + 4..];
+        assert_eq!(actual_body, body);
+    }
+
+    #[test]
+    fn inject_cors_headers_no_header_terminator() {
+        let resp = b"HTTP/1.1 200 OK\r\n";
+        let patched = inject_cors_headers(resp);
+        assert_eq!(patched, resp.to_vec());
     }
 }
