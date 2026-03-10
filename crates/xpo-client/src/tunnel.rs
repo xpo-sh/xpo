@@ -10,6 +10,7 @@ use xpo_tui::app::{BannerInfo, TuiApp};
 use xpo_tui::event::AppEvent;
 use xpo_tui::model::{ConnStatus, RequestLog};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: u16,
     subdomain: Option<String>,
@@ -17,6 +18,8 @@ pub async fn run(
     max_logs: usize,
     visible_rows: usize,
     cors: bool,
+    password: Option<String>,
+    ttl_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http_client = build_http_client();
     let use_tui = TuiApp::check_terminal_size();
@@ -60,6 +63,8 @@ pub async fn run(
             &tui_state,
             max_logs,
             visible_rows,
+            password.clone(),
+            ttl_secs,
         )
         .await
         {
@@ -130,6 +135,8 @@ async fn connect_and_run(
     tui_state: &Arc<std::sync::Mutex<TuiThreadState>>,
     max_logs: usize,
     visible_rows: usize,
+    password: Option<String>,
+    ttl_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
         format!("ws://{server}")
@@ -151,8 +158,8 @@ async fn connect_and_run(
                 let hello = ClientControl::Hello {
                     port,
                     subdomain,
-                    password: None,
-                    ttl_secs: None,
+                    password: password.clone(),
+                    ttl_secs,
                 };
                 ws_write
                     .send(Message::Text(hello.to_json()?.into()))
