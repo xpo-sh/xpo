@@ -189,16 +189,19 @@ where
         .await;
     info!(subdomain = %subdomain, url = %url, "tunnel ready");
 
+    let ttl_notify = std::sync::Arc::new(tokio::sync::Notify::new());
     if let Some(ttl) = tunnel_ttl {
         let state_ttl = state.clone();
         let sub_ttl = subdomain.clone();
         let uid_ttl = user_id.clone();
+        let notify = ttl_notify.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(ttl)).await;
             state_ttl.tunnels.remove(&sub_ttl);
             state_ttl.decrement_user_tunnels(&uid_ttl);
             state_ttl.remove_streams_for_subdomain(&sub_ttl);
             info!(subdomain = %sub_ttl, "tunnel TTL expired");
+            notify.notify_one();
         });
     }
 
@@ -285,6 +288,14 @@ where
                 }
             }
         } => {},
+        _ = ttl_notify.notified() => {
+            info!(subdomain = %subdomain, "closing WS connection due to TTL expiry");
+            let close = Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "TTL expired".into(),
+            }));
+            let _ = ws_write.send(close).await;
+        },
     };
 
     if let Some((_, tunnel)) = state.tunnels.remove(&subdomain) {
