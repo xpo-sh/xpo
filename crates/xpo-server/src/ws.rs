@@ -120,36 +120,37 @@ where
             }
         };
 
-    let subdomain = match ClientControl::from_json(&hello_msg) {
-        Ok(ClientControl::Hello {
-            subdomain,
-            password: _,
-            ttl_secs: _,
-            ..
-        }) => {
-            let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
-            if !is_valid_subdomain(&sub) {
+    let (subdomain, tunnel_password, tunnel_ttl, tunnel_port) =
+        match ClientControl::from_json(&hello_msg) {
+            Ok(ClientControl::Hello {
+                port,
+                subdomain,
+                password,
+                ttl_secs,
+            }) => {
+                let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
+                if !is_valid_subdomain(&sub) {
+                    let resp = ServerControl::Error {
+                        message: "invalid subdomain".into(),
+                    };
+                    let _ = ws_write
+                        .send(Message::Text(resp.to_json().unwrap().into()))
+                        .await;
+                    warn!(subdomain = %sub, "invalid subdomain");
+                    return;
+                }
+                (sub, password, ttl_secs, port)
+            }
+            _ => {
                 let resp = ServerControl::Error {
-                    message: "invalid subdomain".into(),
+                    message: "expected Hello message".into(),
                 };
                 let _ = ws_write
                     .send(Message::Text(resp.to_json().unwrap().into()))
                     .await;
-                warn!(subdomain = %sub, "invalid subdomain");
                 return;
             }
-            sub
-        }
-        _ => {
-            let resp = ServerControl::Error {
-                message: "expected Hello message".into(),
-            };
-            let _ = ws_write
-                .send(Message::Text(resp.to_json().unwrap().into()))
-                .await;
-            return;
-        }
-    };
+        };
 
     let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelMessage>(TUNNEL_CHANNEL_SIZE);
 
@@ -169,10 +170,10 @@ where
                 user_id: user_id.clone(),
                 subdomain: subdomain.clone(),
                 tx: tunnel_tx,
-                password: None,
-                port: 0,
+                password: tunnel_password,
+                port: tunnel_port,
                 created_at: std::time::Instant::now(),
-                ttl_secs: None,
+                ttl_secs: tunnel_ttl,
             });
             state.increment_user_tunnels(&user_id);
         }
@@ -187,6 +188,19 @@ where
         .send(Message::Text(resp.to_json().unwrap().into()))
         .await;
     info!(subdomain = %subdomain, url = %url, "tunnel ready");
+
+    if let Some(ttl) = tunnel_ttl {
+        let state_ttl = state.clone();
+        let sub_ttl = subdomain.clone();
+        let uid_ttl = user_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(ttl)).await;
+            state_ttl.tunnels.remove(&sub_ttl);
+            state_ttl.decrement_user_tunnels(&uid_ttl);
+            state_ttl.remove_streams_for_subdomain(&sub_ttl);
+            info!(subdomain = %sub_ttl, "tunnel TTL expired");
+        });
+    }
 
     let state_clone = state.clone();
     let subdomain_clone = subdomain.clone();
