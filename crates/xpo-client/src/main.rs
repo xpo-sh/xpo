@@ -46,6 +46,8 @@ enum Commands {
     Logout,
     #[command(about = "Show login info")]
     Status,
+    #[command(about = "Check setup status and diagnose issues")]
+    Doctor,
     #[command(about = "Update xpo to the latest version")]
     Update,
     #[command(about = "Remove all xpo data from your system")]
@@ -75,8 +77,6 @@ enum DevCommands {
     Setup,
     #[command(about = "Stop local HTTPS proxy and clean up")]
     Stop,
-    #[command(about = "Check setup status and diagnose issues")]
-    Doctor,
     #[command(about = "Remove CA, untrust it, and remove port forwarding")]
     Uninstall,
 }
@@ -93,7 +93,6 @@ async fn main() {
         Commands::Dev(args) => match args.command {
             Some(DevCommands::Setup) => dev::setup::run(),
             Some(DevCommands::Stop) => dev::stop::run(),
-            Some(DevCommands::Doctor) => dev::doctor::run(),
             Some(DevCommands::Uninstall) => dev::uninstall::run(),
             None => {
                 if let Some(port) = args.port {
@@ -153,6 +152,7 @@ async fn main() {
             println!("  {} Logged out.", console::style("✓").green().bold());
             Ok(())
         }
+        Commands::Doctor => dev::doctor::run(),
         Commands::Update => update::run().await,
         Commands::Uninstall => uninstall::run(),
         Commands::Status => {
