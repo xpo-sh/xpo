@@ -66,10 +66,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     } else if entries.is_empty() {
         println!("  No active tunnels or local domains found.");
     } else {
-        println!(
-            "  {:<8} {:<24} {:<20} STATUS",
-            "TYPE", "DOMAIN", "TARGET"
-        );
+        println!("  {:<8} {:<24} {:<20} STATUS", "TYPE", "DOMAIN", "TARGET");
         for e in &entries {
             println!(
                 "  {:<8} {:<24} {:<20} {}",

@@ -3839,6 +3839,7 @@ dependencies = [
 name = "xpo-server"
 version = "0.2.20-alpha"
 dependencies = [
+ "base64",
  "dashmap",
  "futures-util",
  "http-body-util",
