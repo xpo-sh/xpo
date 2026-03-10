@@ -169,6 +169,10 @@ where
                 user_id: user_id.clone(),
                 subdomain: subdomain.clone(),
                 tx: tunnel_tx,
+                password: None,
+                port: 0,
+                created_at: std::time::Instant::now(),
+                ttl_secs: None,
             });
             state.increment_user_tunnels(&user_id);
         }
