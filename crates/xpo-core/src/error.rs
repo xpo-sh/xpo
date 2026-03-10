@@ -32,8 +32,8 @@ pub enum XpoError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("yaml error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    #[error("toml error: {0}")]
+    Toml(#[from] toml::de::Error),
 
     #[error("jwt error: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),

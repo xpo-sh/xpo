@@ -149,6 +149,7 @@ async fn main() {
             let config = xpo_core::config::Config::load().unwrap_or_default();
             if config.is_authenticated() && !config.is_expired() {
                 let provider = config
+                    .auth
                     .provider
                     .as_deref()
                     .map(|p| {
@@ -159,7 +160,7 @@ async fn main() {
                 println!(
                     "  {} Logged in as {}{}",
                     console::style("✓").green().bold(),
-                    console::style(config.email.as_deref().unwrap_or("unknown")).cyan(),
+                    console::style(config.auth.email.as_deref().unwrap_or("unknown")).cyan(),
                     provider
                 );
             } else {

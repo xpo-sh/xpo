@@ -153,12 +153,12 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let email = user["email"].as_str().map(String::from);
 
     let mut config = Config::load().unwrap_or_default();
-    config.access_token = Some(access_token.to_string());
-    config.refresh_token = Some(refresh_token.to_string());
-    config.expires_at = Some(now() + expires_in);
-    config.user_id = user_id;
-    config.email = email.clone();
-    config.provider = Some(provider.to_string());
+    config.auth.access_token = Some(access_token.to_string());
+    config.auth.refresh_token = Some(refresh_token.to_string());
+    config.auth.expires_at = Some(now() + expires_in);
+    config.auth.user_id = user_id;
+    config.auth.email = email.clone();
+    config.auth.provider = Some(provider.to_string());
     config.save()?;
 
     let provider_label = provider[..1].to_uppercase() + &provider[1..];
@@ -175,6 +175,7 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn refresh_token() -> Result<String, Box<dyn std::error::Error>> {
     let config = Config::load()?;
     let refresh = config
+        .auth
         .refresh_token
         .as_deref()
         .ok_or("no refresh token - run xpo login")?;
@@ -207,9 +208,9 @@ pub async fn refresh_token() -> Result<String, Box<dyn std::error::Error>> {
     let expires_in = body["expires_in"].as_u64().unwrap_or(3600);
 
     let mut config = Config::load().unwrap_or_default();
-    config.access_token = Some(access_token.clone());
-    config.refresh_token = Some(new_refresh.to_string());
-    config.expires_at = Some(now() + expires_in);
+    config.auth.access_token = Some(access_token.clone());
+    config.auth.refresh_token = Some(new_refresh.to_string());
+    config.auth.expires_at = Some(now() + expires_in);
     config.save()?;
 
     Ok(access_token)
@@ -226,7 +227,7 @@ pub async fn get_token() -> Result<String, Box<dyn std::error::Error>> {
         return refresh_token().await;
     }
 
-    Ok(config.access_token.unwrap())
+    Ok(config.auth.access_token.unwrap())
 }
 
 fn extract_query_param(path: &str, key: &str) -> Option<String> {
