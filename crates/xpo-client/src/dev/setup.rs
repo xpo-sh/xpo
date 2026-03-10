@@ -126,8 +126,8 @@ pub(crate) fn pf_output_has_forwarding(output: &[u8]) -> bool {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn verify_pf_runtime_state() -> bool {
-    let output = Command::new("pfctl")
-        .args(["-sn", "-a", "com.xpo"])
+    let output = Command::new("sudo")
+        .args(["-n", "pfctl", "-sn", "-a", "com.xpo"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output();
