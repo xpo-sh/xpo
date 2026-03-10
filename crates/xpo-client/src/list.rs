@@ -82,11 +82,15 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     let hosts_content = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
     let test_domains = parse_test_domains(&hosts_content);
+    let proxy_active = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        tokio::net::TcpStream::connect("127.0.0.1:10443"),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
     for domain in test_domains {
-        let active = tokio::net::TcpStream::connect("127.0.0.1:10443")
-            .await
-            .is_ok();
-        let status = if active { "active" } else { "inactive" };
+        let status = if proxy_active { "active" } else { "inactive" };
 
         let mut details = Vec::new();
         let cert_path = xpo_core::config::Config::dir()
