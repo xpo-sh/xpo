@@ -140,8 +140,13 @@ pub(crate) fn verify_pf_runtime_state() -> bool {
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 pub(crate) fn auto_reload_pf() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = Command::new("sudo")
+        .args(["-n", "pfctl", "-e"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let status = Command::new("sudo")
-        .args(["-n", "pfctl", "-ef", "/etc/pf.conf"])
+        .args(["-n", "pfctl", "-f", "/etc/pf.conf"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
