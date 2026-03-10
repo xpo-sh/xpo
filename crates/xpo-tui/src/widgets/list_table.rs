@@ -220,7 +220,9 @@ pub fn render_keybinds(frame: &mut Frame, area: Rect) {
         Span::styled("q", Theme::accent()),
         Span::styled(":quit  ", Theme::text_dim()),
         Span::styled("\u{2191}\u{2193}", Theme::accent()),
-        Span::styled(":navigate", Theme::text_dim()),
+        Span::styled(":navigate  ", Theme::text_dim()),
+        Span::styled("r", Theme::accent()),
+        Span::styled(":refresh", Theme::text_dim()),
     ]);
     frame.render_widget(Paragraph::new(keys), area);
 }
