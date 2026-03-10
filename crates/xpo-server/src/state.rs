@@ -22,6 +22,10 @@ pub struct Tunnel {
     pub user_id: String,
     pub subdomain: String,
     pub tx: mpsc::Sender<TunnelMessage>,
+    pub password: Option<String>,
+    pub port: u16,
+    pub created_at: std::time::Instant,
+    pub ttl_secs: Option<u64>,
 }
 
 pub enum TunnelMessage {

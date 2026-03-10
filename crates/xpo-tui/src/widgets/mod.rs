@@ -3,6 +3,7 @@ pub mod detail_panel;
 pub mod doctor;
 pub mod help_overlay;
 pub mod keybinds;
+pub mod list_table;
 pub mod log_table;
 pub mod qr_panel;
 pub mod sparkline;

@@ -39,6 +39,8 @@ serde_json = "1"
 rand = "0.10"
 fast_qr = "0.13"
 tempfile = "3"
+humantime = "2"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 flate2 = "1"

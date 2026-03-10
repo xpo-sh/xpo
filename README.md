@@ -111,6 +111,10 @@ $ xpo dev 3000 -n myapp
 - ⚡ **WebSocket relay** - HMR/hot-reload works through tunnel
 - 🏠 **Local HTTPS** - trusted `.test` domains with auto-renewing certs
 - 🌍 **CORS injection** - `--cors` flag adds permissive CORS headers, handles preflight
+- 🔒 **Password protection** - `--password` flag adds HTTP Basic Auth to tunnels
+- ⏱️ **Tunnel TTL** - `--ttl 30m` auto-expires tunnels after a duration
+- ⏳ **Wait for upstream** - `--wait` polls until your dev server is ready
+- 📋 **List tunnels** - `xpo list` shows active tunnels and local dev domains
 - 🔄 **Auto-reconnect** - exponential backoff on connection loss
 - 📦 **Self-update** - `xpo update` to get the latest version
 - 🖥️ **Interactive TUI** - Ratatui-powered dashboard with QR code, request log, filtering
@@ -127,6 +131,11 @@ xpo login                        # authenticate with GitHub or Google
 xpo share <port>                 # public HTTPS tunnel
 xpo share <port> -s <name>       # custom subdomain
 xpo share <port> --cors          # inject CORS headers + handle preflight
+xpo share <port> --password s3cr # password-protect tunnel (Basic Auth)
+xpo share <port> --ttl 30m       # auto-expire tunnel after 30 minutes
+xpo share <port> --wait          # wait for upstream port before connecting
+xpo list                         # show active tunnels and dev domains
+xpo list --json                  # machine-readable output
 xpo dev <port> -n <name>         # local HTTPS proxy (auto-setup on first use)
 xpo dev setup                    # manual setup (CA, trust, port forwarding)
 xpo dev stop                     # clean up /etc/hosts entries

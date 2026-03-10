@@ -10,6 +10,7 @@ use xpo_tui::app::{BannerInfo, TuiApp};
 use xpo_tui::event::AppEvent;
 use xpo_tui::model::{ConnStatus, RequestLog};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: u16,
     subdomain: Option<String>,
@@ -17,6 +18,8 @@ pub async fn run(
     max_logs: usize,
     visible_rows: usize,
     cors: bool,
+    password: Option<String>,
+    ttl_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http_client = build_http_client();
     let use_tui = TuiApp::check_terminal_size();
@@ -60,6 +63,8 @@ pub async fn run(
             &tui_state,
             max_logs,
             visible_rows,
+            password.clone(),
+            ttl_secs,
         )
         .await
         {
@@ -130,6 +135,8 @@ async fn connect_and_run(
     tui_state: &Arc<std::sync::Mutex<TuiThreadState>>,
     max_logs: usize,
     visible_rows: usize,
+    password: Option<String>,
+    ttl_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
         format!("ws://{server}")
@@ -148,7 +155,12 @@ async fn connect_and_run(
     let (user, tunnel_url) = match auth_resp {
         Message::Text(text) => match ServerControl::from_json(&text)? {
             ServerControl::AuthOk { user, .. } => {
-                let hello = ClientControl::Hello { port, subdomain };
+                let hello = ClientControl::Hello {
+                    port,
+                    subdomain,
+                    password: password.clone(),
+                    ttl_secs,
+                };
                 ws_write
                     .send(Message::Text(hello.to_json()?.into()))
                     .await?;
@@ -175,6 +187,11 @@ async fn connect_and_run(
     };
 
     let _ = app_tx.send(AppEvent::Connection(ConnStatus::Connected));
+
+    if let Some(ttl) = ttl_secs {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(ttl);
+        let _ = app_tx.send(AppEvent::TtlDeadline(deadline));
+    }
 
     if use_tui && first_connect {
         let mut ts = tui_state.lock().unwrap();
@@ -733,8 +750,8 @@ fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .pool_idle_timeout(std::time::Duration::from_secs(5))
-        .pool_max_idle_per_host(4)
+        .pool_idle_timeout(std::time::Duration::from_secs(300))
+        .pool_max_idle_per_host(32)
         .http1_only()
         .no_proxy()
         .build()

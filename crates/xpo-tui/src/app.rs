@@ -23,6 +23,7 @@ pub struct TuiApp {
     pub banner: BannerInfo,
     pub should_quit: bool,
     pub start_time: std::time::Instant,
+    pub ttl_deadline: Option<std::time::Instant>,
 }
 
 const MIN_COLS: u16 = 60;
@@ -35,6 +36,7 @@ impl TuiApp {
             banner,
             should_quit: false,
             start_time: std::time::Instant::now(),
+            ttl_deadline: None,
         }
     }
 
@@ -76,6 +78,9 @@ impl TuiApp {
             AppEvent::Request(req) => self.state.push_request(req),
             AppEvent::Connection(status) => self.state.conn_status = status,
             AppEvent::PfStatus(_active) => {}
+            AppEvent::TtlDeadline(deadline) => {
+                self.ttl_deadline = Some(deadline);
+            }
         }
     }
 

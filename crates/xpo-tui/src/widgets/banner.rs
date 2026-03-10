@@ -8,7 +8,13 @@ use crate::app::BannerInfo;
 use crate::model::{ConnStatus, TuiState};
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, area: Rect, banner: &BannerInfo, state: &TuiState) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    banner: &BannerInfo,
+    state: &TuiState,
+    ttl_deadline: Option<std::time::Instant>,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -72,6 +78,29 @@ pub fn render(frame: &mut Frame, area: Rect, banner: &BannerInfo, state: &TuiSta
 
     for extra in &banner.extra_lines {
         lines.push(Line::from(Span::styled(extra, Theme::text_dim())));
+    }
+
+    if let Some(deadline) = ttl_deadline {
+        let now = std::time::Instant::now();
+        if now < deadline {
+            let remaining = deadline - now;
+            let mins = remaining.as_secs() / 60;
+            let secs = remaining.as_secs() % 60;
+            let style = if remaining.as_secs() <= 60 {
+                Theme::error()
+            } else {
+                Style::default().fg(ratatui::style::Color::Yellow)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("\u{23f1} TTL: {:02}:{:02} remaining", mins, secs),
+                style,
+            )]));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "\u{23f1} TTL: expired",
+                Theme::error(),
+            )));
+        }
     }
 
     let paragraph = Paragraph::new(lines);

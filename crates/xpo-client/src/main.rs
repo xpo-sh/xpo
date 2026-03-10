@@ -3,9 +3,11 @@ use clap::{Args, Parser, Subcommand};
 mod auth;
 mod dev;
 mod error_page;
+mod list;
 mod tunnel;
 mod uninstall;
 mod update;
+mod wait;
 
 #[derive(Parser)]
 #[command(
@@ -34,6 +36,14 @@ enum Commands {
         log_visible: usize,
         #[arg(long)]
         cors: bool,
+        #[arg(long, help = "Password protect tunnel")]
+        password: Option<String>,
+        #[arg(long, help = "Tunnel TTL (e.g. 30m, 2h)")]
+        ttl: Option<String>,
+        #[arg(long, help = "Wait for upstream port")]
+        wait: bool,
+        #[arg(long, default_value = "15s", help = "Wait timeout")]
+        wait_timeout: String,
     },
     #[command(about = "Local HTTPS development with .test domains")]
     Dev(DevArgs),
@@ -50,6 +60,11 @@ enum Commands {
     Doctor,
     #[command(about = "Update xpo to the latest version")]
     Update,
+    #[command(about = "List active tunnels and local .test domains")]
+    List {
+        #[arg(long, help = "JSON output")]
+        json: bool,
+    },
     #[command(about = "Remove all xpo data from your system")]
     Uninstall,
 }
@@ -69,6 +84,11 @@ struct DevArgs {
     log_max: usize,
     #[arg(long, default_value = "10")]
     log_visible: usize,
+
+    #[arg(long, help = "Wait for upstream port")]
+    pub wait: bool,
+    #[arg(long, default_value = "15s", help = "Wait timeout")]
+    pub wait_timeout: String,
 }
 
 #[derive(Subcommand)]
@@ -89,7 +109,16 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    let result: Result<(), Box<dyn std::error::Error>> = run(cli).await;
+
+    if let Err(e) = result {
+        eprintln!("  Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    match cli.command {
         Commands::Dev(args) => match args.command {
             Some(DevCommands::Setup) => dev::setup::run(),
             Some(DevCommands::Stop) => dev::stop::run(),
@@ -104,6 +133,11 @@ async fn main() {
                             name
                         );
                         std::process::exit(1);
+                    }
+                    if args.wait {
+                        let timeout = humantime::parse_duration(&args.wait_timeout)
+                            .unwrap_or(std::time::Duration::from_secs(15));
+                        wait::wait_for_port(port, timeout).await?;
                     }
                     match ensure_dev_setup() {
                         Ok(()) => {
@@ -126,11 +160,41 @@ async fn main() {
             log_max,
             log_visible,
             cors,
+            password,
+            ttl,
+            wait,
+            wait_timeout,
         } => {
+            if wait {
+                let timeout = humantime::parse_duration(&wait_timeout)
+                    .unwrap_or(std::time::Duration::from_secs(15));
+                wait::wait_for_port(port, timeout).await?;
+            }
+            let ttl_secs = ttl.map(|t| {
+                humantime::parse_duration(&t)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_else(|_| {
+                        t.parse::<u64>().unwrap_or_else(|_| {
+                            eprintln!("Invalid TTL: {}. Use format like 30m, 2h, 1h30m", t);
+                            std::process::exit(1);
+                        })
+                    })
+            });
             let server =
                 std::env::var("XPO_SERVER").unwrap_or_else(|_| "ws.xpo.sh:8081".to_string());
-            tunnel::run(port, subdomain, &server, log_max, log_visible, cors).await
+            tunnel::run(
+                port,
+                subdomain,
+                &server,
+                log_max,
+                log_visible,
+                cors,
+                password,
+                ttl_secs,
+            )
+            .await
         }
+        Commands::List { json } => list::run(json).await,
         Commands::Login { provider } => {
             let provider = provider.unwrap_or_else(|| {
                 let items = vec!["GitHub", "Google"];
@@ -178,11 +242,6 @@ async fn main() {
             }
             Ok(())
         }
-    };
-
-    if let Err(e) = result {
-        eprintln!("  Error: {e}");
-        std::process::exit(1);
     }
 }
 
