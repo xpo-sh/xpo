@@ -94,7 +94,7 @@ pub async fn run(port: u16, name: &str, max_logs: usize) -> Result<(), Box<dyn s
         }
     });
 
-    let (cert_pem, key_pem) = ca::generate_leaf_cert(&domain)?;
+    let (cert_pem, key_pem) = ca::ensure_leaf_cert(&domain)?;
     hosts::add(&domain)?;
 
     let certs: Vec<CertificateDer<'static>> =
