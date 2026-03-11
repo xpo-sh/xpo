@@ -14,6 +14,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +26,10 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             server: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+            server: true
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
@@ -32,7 +37,7 @@ jobs:
             cross: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify version matches tag
         shell: bash
@@ -67,7 +72,16 @@ jobs:
 
       - name: Build client (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p xpo
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            cross build --release --target ${{ matrix.target }} -p xpo && exit 0
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 15))
+          done
 
       - name: Build server (native)
         if: matrix.server && !matrix.cross
@@ -75,7 +89,16 @@ jobs:
 
       - name: Build server (cross)
         if: matrix.server && matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p xpo-server
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            cross build --release --target ${{ matrix.target }} -p xpo-server && exit 0
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 15))
+          done
 
       - name: Package client
         shell: bash
@@ -90,12 +113,12 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ../../../xpo-server-${{ matrix.target }}.tar.gz xpo-server
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: xpo-${{ matrix.target }}
           path: xpo-${{ matrix.target }}.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: matrix.server
         with:
           name: xpo-server-${{ matrix.target }}
@@ -106,7 +129,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
 
