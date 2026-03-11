@@ -2,6 +2,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
@@ -11,6 +12,11 @@ use xpo_tui::event::AppEvent;
 use xpo_tui::model::{ConnStatus, RequestLog};
 
 use crate::hmr::{HmrContext, HmrMode};
+
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+const MAX_WS_UPGRADE_RESPONSE_SIZE: usize = 64 * 1024;
+const OUTGOING_WS_QUEUE_SIZE: usize = 16;
+const RELAY_CHANNEL_SIZE: usize = 32;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -124,6 +130,43 @@ struct TuiThreadState {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+fn signal_backpressure(flag: &Arc<AtomicBool>, notify: &Arc<tokio::sync::Notify>) {
+    if !flag.swap(true, Ordering::Relaxed) {
+        notify.notify_one();
+    }
+}
+
+fn queue_tunnel_message(
+    tx: &mpsc::Sender<Message>,
+    msg: Message,
+    overloaded: &Arc<AtomicBool>,
+    notify: &Arc<tokio::sync::Notify>,
+) -> bool {
+    match tx.try_send(msg) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            signal_backpressure(overloaded, notify);
+            false
+        }
+        Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+fn queue_stream_end(
+    tx: &mpsc::Sender<Message>,
+    stream_id: xpo_core::StreamId,
+    overloaded: &Arc<AtomicBool>,
+    notify: &Arc<tokio::sync::Notify>,
+) -> bool {
+    let end_pkt = Packet::end(stream_id);
+    queue_tunnel_message(
+        tx,
+        Message::Binary(end_pkt.encode().into()),
+        overloaded,
+        notify,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn connect_and_run(
     port: u16,
@@ -227,10 +270,11 @@ async fn connect_and_run(
         legacy_print_banner(&tunnel_url, port, &user);
     }
 
-    let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
-    let ws_relays: Arc<
-        dashmap::DashMap<xpo_core::StreamId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-    > = Arc::new(dashmap::DashMap::new());
+    let (resp_tx, mut resp_rx) = mpsc::channel::<Message>(OUTGOING_WS_QUEUE_SIZE);
+    let ws_relays: Arc<dashmap::DashMap<xpo_core::StreamId, mpsc::Sender<Vec<u8>>>> =
+        Arc::new(dashmap::DashMap::new());
+    let relay_overloaded = Arc::new(AtomicBool::new(false));
+    let relay_overloaded_notify = Arc::new(tokio::sync::Notify::new());
 
     loop {
         if quit_flag.load(Ordering::Relaxed) {
@@ -240,6 +284,9 @@ async fn connect_and_run(
         tokio::select! {
             _ = quit_notify.notified() => {
                 return Ok(());
+            }
+            _ = relay_overloaded_notify.notified() => {
+                return Err("relay backpressure exceeded".into());
             }
             msg = tokio::time::timeout(
                 std::time::Duration::from_secs(HEARTBEAT_TIMEOUT_SECS),
@@ -251,29 +298,62 @@ async fn connect_and_run(
                             match packet.packet_type {
                                 PacketType::Connection => {}
                                 PacketType::Data => {
-                                    if let Some(relay_tx) = ws_relays.get(&packet.stream_id) {
-                                        let _ = relay_tx.send(packet.payload);
+                                    let stream_id = packet.stream_id;
+                                    let payload = packet.payload;
+
+                                    if let Some(relay_tx) = ws_relays.get(&stream_id).map(|tx| tx.clone()) {
+                                        match relay_tx.try_send(payload) {
+                                            Ok(()) => {}
+                                            Err(TrySendError::Full(_)) => {
+                                                ws_relays.remove(&stream_id);
+                                                if !queue_stream_end(
+                                                    &resp_tx,
+                                                    stream_id,
+                                                    &relay_overloaded,
+                                                    &relay_overloaded_notify,
+                                                ) && relay_overloaded.load(Ordering::Relaxed) {
+                                                    return Err("relay backpressure exceeded".into());
+                                                }
+                                            }
+                                            Err(TrySendError::Closed(_)) => {
+                                                ws_relays.remove(&stream_id);
+                                            }
+                                        }
                                     } else {
-                                        let stream_id = packet.stream_id;
-                                        let payload = packet.payload;
                                         let tx = resp_tx.clone();
                                         let relays = ws_relays.clone();
                                         let event_tx = app_tx.clone();
                                         let client_clone = client.clone();
                                         let hmr_context = hmr_context.clone();
+                                        let relay_overloaded = relay_overloaded.clone();
+                                        let relay_overloaded_notify = relay_overloaded_notify.clone();
                                         tokio::spawn(async move {
                                             let result = proxy_to_upstream(&client_clone, port, &payload, stream_id, &event_tx, cors, hmr_context).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
-                                            let _ = tx.send(Message::Binary(resp_pkt.encode().into()));
+                                            if !queue_tunnel_message(
+                                                &tx,
+                                                Message::Binary(resp_pkt.encode().into()),
+                                                &relay_overloaded,
+                                                &relay_overloaded_notify,
+                                            ) {
+                                                return;
+                                            }
                                             if let Some(relay) = result.ws_relay {
-                                                let (relay_data_tx, mut relay_data_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                                                let (relay_data_tx, mut relay_data_rx) =
+                                                    mpsc::channel::<Vec<u8>>(RELAY_CHANNEL_SIZE);
                                                 relays.insert(stream_id, relay_data_tx);
                                                 let tx2 = tx.clone();
+                                                let relay_overloaded2 = relay_overloaded.clone();
+                                                let relay_overloaded_notify2 =
+                                                    relay_overloaded_notify.clone();
                                                 tokio::spawn(async move {
                                                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                                                     let (mut ur, mut uw) = relay.upstream.into_split();
                                                     let tx3 = tx2.clone();
                                                     let sid = relay.stream_id;
+                                                    let relay_overloaded3 = relay_overloaded2.clone();
+                                                    let relay_overloaded_notify3 =
+                                                        relay_overloaded_notify2.clone();
                                                     let read_task = tokio::spawn(async move {
                                                         let mut buf = [0u8; 8192];
                                                         loop {
@@ -281,7 +361,12 @@ async fn connect_and_run(
                                                                 Ok(0) | Err(_) => break,
                                                                 Ok(n) => {
                                                                     let pkt = Packet::data(sid, buf[..n].to_vec());
-                                                                    if tx3.send(Message::Binary(pkt.encode().into())).is_err() {
+                                                                    if !queue_tunnel_message(
+                                                                        &tx3,
+                                                                        Message::Binary(pkt.encode().into()),
+                                                                        &relay_overloaded3,
+                                                                        &relay_overloaded_notify3,
+                                                                    ) {
                                                                         break;
                                                                     }
                                                                 }
@@ -296,20 +381,34 @@ async fn connect_and_run(
                                                         }
                                                     });
                                                     let _ = tokio::join!(read_task, write_task);
-                                                    let end_pkt = Packet::end(sid);
-                                                    let _ = tx2.send(Message::Binary(end_pkt.encode().into()));
                                                     relays.remove(&sid);
+                                                    let _ = queue_stream_end(
+                                                        &tx2,
+                                                        sid,
+                                                        &relay_overloaded2,
+                                                        &relay_overloaded_notify2,
+                                                    );
                                                 });
                                             } else {
-                                                let end_pkt = Packet::end(stream_id);
-                                                let _ = tx.send(Message::Binary(end_pkt.encode().into()));
+                                                let _ = queue_stream_end(
+                                                    &tx,
+                                                    stream_id,
+                                                    &relay_overloaded,
+                                                    &relay_overloaded_notify,
+                                                );
                                             }
                                         });
                                     }
                                 }
                                 PacketType::Heartbeat => {
                                     let pong = Packet::pong();
-                                    let _ = ws_write.send(Message::Binary(pong.encode().into())).await;
+                                    if ws_write
+                                        .send(Message::Binary(pong.encode().into()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return Err("failed to reply heartbeat".into());
+                                    }
                                 }
                                 PacketType::End => {}
                                 PacketType::Pong => {}
@@ -329,7 +428,9 @@ async fn connect_and_run(
                 }
             }
             Some(ws_msg) = resp_rx.recv() => {
-                let _ = ws_write.send(ws_msg).await;
+                if ws_write.send(ws_msg).await.is_err() {
+                    return Err("failed to send tunnel message".into());
+                }
             }
         }
     }
@@ -425,6 +526,12 @@ struct WsRelay {
 }
 
 static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyReadError {
+    TooLarge,
+    ReadFailed,
+}
 
 async fn proxy_to_upstream(
     client: &reqwest::Client,
@@ -528,7 +635,19 @@ async fn proxy_ws_upgrade(
         match tokio::time::timeout_at(deadline, upstream.read(&mut buf)).await {
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
-                response.extend_from_slice(&buf[..n]);
+                if append_limited_bytes(&mut response, &buf[..n], MAX_WS_UPGRADE_RESPONSE_SIZE)
+                    .is_err()
+                {
+                    send_request_log(event_tx, &method, &path, 502, start.elapsed());
+                    return ProxyResult {
+                        response: crate::error_page::error_response(
+                            502,
+                            "websocket upgrade too large",
+                            ".sh",
+                        ),
+                        ws_relay: None,
+                    };
+                }
                 if response.starts_with(b"HTTP/1.1 101")
                     && response.windows(4).any(|w| w == b"\r\n\r\n")
                 {
@@ -547,9 +666,6 @@ async fn proxy_ws_upgrade(
                 }
             }
             _ => break,
-        }
-        if response.len() > 10 * 1024 * 1024 {
-            break;
         }
     }
 
@@ -779,7 +895,40 @@ fn serialize_response(
     bytes
 }
 
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+fn append_limited_bytes(
+    buffer: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> Result<(), BodyReadError> {
+    let next_len = buffer
+        .len()
+        .checked_add(chunk.len())
+        .ok_or(BodyReadError::TooLarge)?;
+    if next_len > limit {
+        return Err(BodyReadError::TooLarge);
+    }
+
+    buffer.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn read_response_body_limited(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, BodyReadError> {
+    let capacity = response.content_length().unwrap_or(0).min(limit as u64) as usize;
+    let mut body = Vec::with_capacity(capacity);
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| BodyReadError::ReadFailed)?
+    {
+        append_limited_bytes(&mut body, &chunk, limit)?;
+    }
+
+    Ok(body)
+}
 
 fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -843,7 +992,7 @@ async fn proxy_http_reqwest(
         req_builder = req_builder.body(body);
     }
 
-    let response = match req_builder.send().await {
+    let mut response = match req_builder.send().await {
         Ok(resp) => resp,
         Err(e) => {
             if e.is_timeout() {
@@ -876,14 +1025,12 @@ async fn proxy_http_reqwest(
         })
         .collect();
 
-    let body_bytes = match response.bytes().await {
-        Ok(b) => {
-            if b.len() > MAX_BODY_SIZE {
-                return crate::error_page::error_response(502, "response too large", ".sh");
-            }
-            b
+    let body_bytes = match read_response_body_limited(&mut response, MAX_BODY_SIZE).await {
+        Ok(body) => body,
+        Err(BodyReadError::TooLarge) => {
+            return crate::error_page::error_response(502, "response too large", ".sh");
         }
-        Err(_) => {
+        Err(BodyReadError::ReadFailed) => {
             return crate::error_page::error_response(502, "failed to read response", ".sh");
         }
     };
@@ -891,7 +1038,7 @@ async fn proxy_http_reqwest(
     let (final_headers, final_body) =
         match crate::hmr::maybe_rewrite_response(hmr_context, &path, &resp_headers, &body_bytes) {
             Some(outcome) => (outcome.headers, outcome.body),
-            None => (resp_headers, body_bytes.to_vec()),
+            None => (resp_headers, body_bytes),
         };
 
     let mut result = serialize_response(status, &reason, &final_headers, &final_body);

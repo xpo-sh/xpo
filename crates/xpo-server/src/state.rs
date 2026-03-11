@@ -4,9 +4,12 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use xpo_core::auth::JwtValidator;
 use xpo_core::StreamId;
 
 pub type SharedState = Arc<ServerState>;
+pub const MAX_HTTP_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
+pub const ACTIVE_STREAM_QUEUE_SIZE: usize = 32;
 
 pub struct ServerState {
     pub tunnels: DashMap<String, Tunnel>,
@@ -15,6 +18,7 @@ pub struct ServerState {
     pub user_tunnel_count: DashMap<String, AtomicUsize>,
     pub subdomain_streams: DashMap<String, HashSet<StreamId>>,
     pub config: Arc<ServerConfig>,
+    pub jwt_validator: Arc<JwtValidator>,
 }
 
 #[allow(dead_code)]
@@ -48,12 +52,12 @@ pub struct PendingRequest {
 
 #[allow(dead_code)]
 pub struct ActiveStream {
-    pub from_client_tx: mpsc::UnboundedSender<Vec<u8>>,
+    pub from_client_tx: mpsc::Sender<Vec<u8>>,
     pub tunnel_subdomain: String,
 }
 
 impl ServerState {
-    pub fn new(config: Arc<ServerConfig>) -> SharedState {
+    pub fn new(config: Arc<ServerConfig>, jwt_validator: Arc<JwtValidator>) -> SharedState {
         Arc::new(Self {
             tunnels: DashMap::new(),
             pending: DashMap::new(),
@@ -61,6 +65,7 @@ impl ServerState {
             user_tunnel_count: DashMap::new(),
             subdomain_streams: DashMap::new(),
             config,
+            jwt_validator,
         })
     }
 

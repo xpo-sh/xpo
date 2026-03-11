@@ -20,14 +20,20 @@ pub struct JwtValidator {
 }
 
 impl JwtValidator {
-    pub fn new(jwt_secret: &str) -> Self {
-        let decoding_key = DecodingKey::from_secret(jwt_secret.as_bytes());
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.set_audience(&["authenticated"]);
-        validation.set_required_spec_claims(&["sub", "aud", "exp"]);
+    pub fn new(key_material: &str) -> Self {
+        let (decoding_key, algorithms) = if looks_like_public_pem(key_material) {
+            decoding_key_from_public_pem(key_material.as_bytes())
+                .unwrap_or_else(|e| panic!("invalid JWT public key PEM: {e}"))
+        } else {
+            (
+                DecodingKey::from_secret(key_material.as_bytes()),
+                vec![Algorithm::HS256],
+            )
+        };
+
         Self {
             decoding_key,
-            validation,
+            validation: validation_for(algorithms),
         }
     }
 
@@ -35,6 +41,43 @@ impl JwtValidator {
         let token_data = decode::<Claims>(token, &self.decoding_key, &self.validation)?;
         Ok(token_data.claims)
     }
+}
+
+fn validation_for(algorithms: Vec<Algorithm>) -> Validation {
+    let mut validation = Validation::new(*algorithms.first().unwrap_or(&Algorithm::HS256));
+    validation.algorithms = algorithms;
+    validation.set_audience(&["authenticated"]);
+    validation.set_required_spec_claims(&["sub", "aud", "exp"]);
+    validation
+}
+
+fn looks_like_public_pem(key_material: &str) -> bool {
+    let trimmed = key_material.trim();
+    trimmed.starts_with("-----BEGIN ")
+}
+
+fn decoding_key_from_public_pem(
+    pem: &[u8],
+) -> std::result::Result<(DecodingKey, Vec<Algorithm>), jsonwebtoken::errors::Error> {
+    if let Ok(decoding_key) = DecodingKey::from_rsa_pem(pem) {
+        return Ok((
+            decoding_key,
+            vec![
+                Algorithm::RS256,
+                Algorithm::RS384,
+                Algorithm::RS512,
+                Algorithm::PS256,
+                Algorithm::PS384,
+                Algorithm::PS512,
+            ],
+        ));
+    }
+
+    if let Ok(decoding_key) = DecodingKey::from_ec_pem(pem) {
+        return Ok((decoding_key, vec![Algorithm::ES256, Algorithm::ES384]));
+    }
+
+    DecodingKey::from_ed_pem(pem).map(|decoding_key| (decoding_key, vec![Algorithm::EdDSA]))
 }
 
 #[cfg(test)]
@@ -47,6 +90,8 @@ pub fn create_test_token(secret: &str, claims: &Claims) -> String {
 mod tests {
     use super::*;
 
+    const RSA_PRIVATE_KEY: &str = "REDACTED_TEST_KEY";
+    const RSA_PUBLIC_KEY: &str = "REDACTED_TEST_KEY";
     const TEST_SECRET: &str = "xpo-test-secret-32-chars-long!!!";
 
     fn test_claims(exp_offset: i64) -> Claims {
@@ -105,6 +150,24 @@ mod tests {
         assert!(validator.validate("not.a.jwt").is_err());
         assert!(validator.validate("").is_err());
         assert!(validator.validate("garbage").is_err());
+    }
+
+    #[test]
+    fn valid_rsa_token() {
+        let claims = test_claims(3600);
+        let key = EncodingKey::from_rsa_pem(RSA_PRIVATE_KEY.as_bytes()).unwrap();
+        let token = encode(&Header::new(Algorithm::RS256), &claims, &key).unwrap();
+        let validator = JwtValidator::new(RSA_PUBLIC_KEY);
+        let result = validator.validate(&token).unwrap();
+        assert_eq!(result.sub, "user-uuid-123");
+    }
+
+    #[test]
+    fn public_key_validator_rejects_hs256_token() {
+        let claims = test_claims(3600);
+        let token = create_test_token(TEST_SECRET, &claims);
+        let validator = JwtValidator::new(RSA_PUBLIC_KEY);
+        assert!(validator.validate(&token).is_err());
     }
 
     #[test]

@@ -15,7 +15,8 @@ use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
-const MAX_CONNECTIONS: usize = 1024;
+const MAX_HTTP_CONNECTIONS: usize = 960;
+const MAX_WS_CONNECTIONS: usize = 64;
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
@@ -25,6 +26,7 @@ async fn main() {
         .expect("failed to install crypto provider");
 
     let config = config::ServerConfig::from_env();
+    let jwt_validator = Arc::new(xpo_core::auth::JwtValidator::new(&config.jwt_key_material));
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -35,7 +37,9 @@ async fn main() {
 
     info!(
         http_port = config.http_port,
+        http_bind = %config.http_bind,
         ws_port = config.ws_port,
+        ws_bind = %config.ws_bind,
         base_domain = %config.base_domain,
         scheme = %config.scheme,
         region = %config.region,
@@ -72,7 +76,9 @@ async fn main() {
     };
 
     let http_port = config.http_port;
+    let http_bind = config.http_bind.clone();
     let ws_port = config.ws_port;
+    let ws_bind = config.ws_bind.clone();
     let config = Arc::new(config);
 
     if config.acme_enabled {
@@ -81,14 +87,15 @@ async fn main() {
         }
     }
 
-    let state = state::ServerState::new(config);
-    let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let state = state::ServerState::new(config, jwt_validator);
+    let http_semaphore = Arc::new(Semaphore::new(MAX_HTTP_CONNECTIONS));
+    let ws_semaphore = Arc::new(Semaphore::new(MAX_WS_CONNECTIONS));
 
     let http_state = state.clone();
     let http_tls = tls_acceptor.clone();
-    let http_sem = semaphore.clone();
+    let http_sem = http_semaphore.clone();
     let http_handle = tokio::spawn(async move {
-        let listener = TcpListener::bind(format!("0.0.0.0:{http_port}"))
+        let listener = TcpListener::bind(format!("{http_bind}:{http_port}"))
             .await
             .unwrap();
         info!(port = http_port, "http listening");
@@ -118,9 +125,9 @@ async fn main() {
 
     let ws_state = state.clone();
     let ws_tls = tls_acceptor;
-    let ws_sem = semaphore;
+    let ws_sem = ws_semaphore;
     let ws_handle = tokio::spawn(async move {
-        let listener = TcpListener::bind(format!("0.0.0.0:{ws_port}"))
+        let listener = TcpListener::bind(format!("{ws_bind}:{ws_port}"))
             .await
             .unwrap();
         info!(port = ws_port, "ws listening");

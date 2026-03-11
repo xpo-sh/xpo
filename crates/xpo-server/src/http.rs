@@ -1,13 +1,21 @@
-use crate::state::{ActiveStream, PendingRequest, SharedState, TunnelMessage};
+use crate::state::{
+    ActiveStream, PendingRequest, SharedState, TunnelMessage, ACTIVE_STREAM_QUEUE_SIZE,
+    MAX_HTTP_REQUEST_BODY_SIZE,
+};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
+use hyper::HeaderMap;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use xpo_core::auth::JwtValidator;
 use xpo_core::error_page::ErrorPage;
 use xpo_core::StreamId;
+
+enum SerializeRequestError {
+    PayloadTooLarge,
+    ReadBody,
+}
 
 pub async fn handle_http(
     req: Request<hyper::body::Incoming>,
@@ -76,14 +84,30 @@ pub async fn handle_http(
         return handle_ws_upgrade(req, state, subdomain, tunnel_tx, host).await;
     }
 
+    let raw_request = match serialize_request(req, &host).await {
+        Ok(bytes) => bytes,
+        Err(SerializeRequestError::PayloadTooLarge) => {
+            return Ok(text_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Request body too large",
+                "Maximum request body is 10 MiB",
+            ));
+        }
+        Err(SerializeRequestError::ReadBody) => {
+            return Ok(text_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid request body",
+                "The request body could not be read",
+            ));
+        }
+    };
+
     let stream_id = StreamId::new();
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
     state
         .pending
         .insert(stream_id, PendingRequest { response_tx });
-
-    let raw_request = serialize_request(req, &host).await;
 
     match tunnel_tx.try_send(TunnelMessage::HttpRequest {
         stream_id,
@@ -186,7 +210,7 @@ async fn handle_ws_upgrade(
 
     tracing::debug!(subdomain = %subdomain, "ws upgrade");
 
-    let (from_client_tx, mut from_client_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (from_client_tx, mut from_client_rx) = tokio::sync::mpsc::channel(ACTIVE_STREAM_QUEUE_SIZE);
     state.add_stream(
         stream_id,
         &subdomain,
@@ -336,8 +360,7 @@ fn tunnels_api_response(
         }
     };
 
-    let validator = JwtValidator::new(&state.config.jwt_secret);
-    let claims = match validator.validate(token) {
+    let claims = match state.jwt_validator.validate(token) {
         Ok(c) => c,
         Err(_) => {
             let body = r#"{"error":"unauthorized"}"#;
@@ -381,18 +404,59 @@ fn tunnels_api_response(
         .unwrap()
 }
 
-async fn serialize_request(req: Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
+async fn serialize_request(
+    req: Request<hyper::body::Incoming>,
+    host: &str,
+) -> Result<Vec<u8>, SerializeRequestError> {
+    validate_request_body_size(req.headers())?;
+
     let mut bytes = serialize_request_headers(&req, host);
-    let body = req
-        .into_body()
-        .collect()
-        .await
-        .map(|c| c.to_bytes())
-        .unwrap_or_default();
-    if !body.is_empty() {
-        bytes.extend_from_slice(&body);
+    let mut body = req.into_body();
+    let mut body_size = 0usize;
+
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| SerializeRequestError::ReadBody)?;
+        if let Ok(chunk) = frame.into_data() {
+            append_request_body_chunk(&mut bytes, &mut body_size, &chunk)?;
+        }
     }
-    bytes
+
+    Ok(bytes)
+}
+
+fn validate_request_body_size(headers: &HeaderMap) -> Result<(), SerializeRequestError> {
+    let Some(content_length) = headers.get(hyper::header::CONTENT_LENGTH) else {
+        return Ok(());
+    };
+
+    let content_length = content_length
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or(SerializeRequestError::ReadBody)?;
+
+    if content_length > MAX_HTTP_REQUEST_BODY_SIZE {
+        return Err(SerializeRequestError::PayloadTooLarge);
+    }
+
+    Ok(())
+}
+
+fn append_request_body_chunk(
+    bytes: &mut Vec<u8>,
+    body_size: &mut usize,
+    chunk: &[u8],
+) -> Result<(), SerializeRequestError> {
+    let next_size = body_size
+        .checked_add(chunk.len())
+        .ok_or(SerializeRequestError::PayloadTooLarge)?;
+    if next_size > MAX_HTTP_REQUEST_BODY_SIZE {
+        return Err(SerializeRequestError::PayloadTooLarge);
+    }
+
+    bytes.extend_from_slice(chunk);
+    *body_size = next_size;
+    Ok(())
 }
 
 fn serialize_request_headers(req: &Request<hyper::body::Incoming>, host: &str) -> Vec<u8> {
@@ -589,7 +653,8 @@ mod tests {
         use std::sync::Arc;
 
         let config = ServerConfig::from_env();
-        let state = ServerState::new(Arc::new(config));
+        let jwt_validator = Arc::new(xpo_core::auth::JwtValidator::new(&config.jwt_key_material));
+        let state = ServerState::new(Arc::new(config), jwt_validator);
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TunnelMessage>(1);
         state.tunnels.insert(

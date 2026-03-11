@@ -4,16 +4,15 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
-use xpo_core::auth::JwtValidator;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_INTERVAL_SECS, HEARTBEAT_TIMEOUT_SECS};
 
 const MAX_TUNNELS_PER_USER: usize = 5;
 const TUNNEL_CHANNEL_SIZE: usize = 256;
-const MAX_WS_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+const MAX_WS_MESSAGE_SIZE: usize = 12 * 1024 * 1024;
 const MAX_WS_FRAME_SIZE: usize = 2 * 1024 * 1024;
 
 static RESERVED_SUBDOMAINS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -52,7 +51,6 @@ where
 
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
-    let validator = JwtValidator::new(&state.config.jwt_secret);
     let user_id;
 
     let auth_msg =
@@ -65,7 +63,7 @@ where
         };
 
     match ClientControl::from_json(&auth_msg) {
-        Ok(ClientControl::Auth { token }) => match validator.validate(&token) {
+        Ok(ClientControl::Auth { token }) => match state.jwt_validator.validate(&token) {
             Ok(claims) => {
                 user_id = claims.sub.clone();
                 let resp = ServerControl::AuthOk {
@@ -153,6 +151,7 @@ where
         };
 
     let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelMessage>(TUNNEL_CHANNEL_SIZE);
+    let relay_control_tx = tunnel_tx.clone();
 
     match state.tunnels.entry(subdomain.clone()) {
         Entry::Occupied(_) => {
@@ -264,8 +263,36 @@ where
                                 PacketType::Data => {
                                     if let Some((_, pending)) = state_clone.pending.remove(&packet.stream_id) {
                                         let _ = pending.response_tx.send(packet.payload);
-                                    } else if let Some(stream) = state_clone.streams.get(&packet.stream_id) {
-                                        let _ = stream.from_client_tx.send(packet.payload);
+                                    } else {
+                                        let stream_id = packet.stream_id;
+                                        let payload = packet.payload;
+                                        let relay_tx = state_clone
+                                            .streams
+                                            .get(&stream_id)
+                                            .map(|stream| stream.from_client_tx.clone());
+
+                                        if let Some(tx) = relay_tx {
+                                            match tx.try_send(payload) {
+                                                Ok(()) => {}
+                                                Err(TrySendError::Full(_)) => {
+                                                    warn!(
+                                                        subdomain = %subdomain_clone,
+                                                        stream_id = %stream_id,
+                                                        "closing overloaded relay stream"
+                                                    );
+                                                    state_clone.remove_stream(&stream_id);
+                                                    if relay_control_tx
+                                                        .try_send(TunnelMessage::StreamEnd { stream_id })
+                                                        .is_err()
+                                                    {
+                                                        break;
+                                                    }
+                                                }
+                                                Err(TrySendError::Closed(_)) => {
+                                                    state_clone.remove_stream(&stream_id);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 PacketType::End => {
