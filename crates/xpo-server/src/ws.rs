@@ -7,10 +7,13 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
+use xpo_core::auth::Claims;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_INTERVAL_SECS, HEARTBEAT_TIMEOUT_SECS};
 
-const MAX_TUNNELS_PER_USER: usize = 5;
+const DEFAULT_FREE_MAX_TUNNELS: usize = 1;
+const ABSOLUTE_MAX_TUNNELS_PER_USER: usize = 32;
+const DEFAULT_FREE_MAX_TTL_SECS: u64 = 3600;
 const TUNNEL_CHANNEL_SIZE: usize = 256;
 const MAX_WS_MESSAGE_SIZE: usize = 12 * 1024 * 1024;
 const MAX_WS_FRAME_SIZE: usize = 2 * 1024 * 1024;
@@ -30,6 +33,36 @@ fn is_valid_subdomain(s: &str) -> bool {
         && !s.starts_with('-')
         && !s.ends_with('-')
         && !RESERVED_SUBDOMAINS.contains(s)
+}
+
+struct PlanLimits {
+    max_tunnels: usize,
+    max_ttl_secs: Option<u64>,
+    allow_custom_subdomain: bool,
+}
+
+fn plan_limits_from_claims(claims: &Claims) -> PlanLimits {
+    let plan = claims.xpo_plan.as_deref().unwrap_or("free");
+    let requested_max_tunnels = claims
+        .xpo_max_tunnels
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(match plan {
+            "pro" | "team" => ABSOLUTE_MAX_TUNNELS_PER_USER,
+            _ => DEFAULT_FREE_MAX_TUNNELS,
+        });
+
+    let max_ttl_secs = match claims.xpo_max_ttl_secs {
+        Some(value) => Some(value),
+        None if matches!(plan, "pro" | "team") => None,
+        None => Some(DEFAULT_FREE_MAX_TTL_SECS),
+    };
+
+    PlanLimits {
+        max_tunnels: requested_max_tunnels.min(ABSOLUTE_MAX_TUNNELS_PER_USER),
+        max_ttl_secs,
+        allow_custom_subdomain: claims.xpo_allow_custom_subdomain.unwrap_or(false),
+    }
 }
 
 pub async fn handle_websocket<S>(stream: S, state: SharedState)
@@ -52,6 +85,7 @@ where
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
     let user_id;
+    let plan_limits;
 
     let auth_msg =
         match tokio::time::timeout(std::time::Duration::from_secs(5), ws_read.next()).await {
@@ -66,6 +100,7 @@ where
         Ok(ClientControl::Auth { token }) => match state.jwt_validator.validate(&token) {
             Ok(claims) => {
                 user_id = claims.sub.clone();
+                plan_limits = plan_limits_from_claims(&claims);
                 let resp = ServerControl::AuthOk {
                     user: claims.email.unwrap_or_default(),
                     user_id: claims.sub,
@@ -98,9 +133,9 @@ where
     }
 
     let user_tunnel_count = state.get_user_tunnel_count(&user_id);
-    if user_tunnel_count >= MAX_TUNNELS_PER_USER {
+    if user_tunnel_count >= plan_limits.max_tunnels {
         let resp = ServerControl::Error {
-            message: format!("max {MAX_TUNNELS_PER_USER} tunnels per user"),
+            message: format!("max {} tunnels per user", plan_limits.max_tunnels),
         };
         let _ = ws_write
             .send(Message::Text(resp.to_json().unwrap().into()))
@@ -126,6 +161,15 @@ where
                 password,
                 ttl_secs,
             }) => {
+                if subdomain.is_some() && !plan_limits.allow_custom_subdomain {
+                    let resp = ServerControl::Error {
+                        message: "custom subdomains require Pro".into(),
+                    };
+                    let _ = ws_write
+                        .send(Message::Text(resp.to_json().unwrap().into()))
+                        .await;
+                    return;
+                }
                 let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
                 if !is_valid_subdomain(&sub) {
                     let resp = ServerControl::Error {
@@ -137,7 +181,10 @@ where
                     warn!(subdomain = %sub, "invalid subdomain");
                     return;
                 }
-                (sub, password, ttl_secs, port)
+                let effective_ttl = plan_limits
+                    .max_ttl_secs
+                    .map(|max_ttl| ttl_secs.unwrap_or(max_ttl).min(max_ttl));
+                (sub, password, effective_ttl, port)
             }
             _ => {
                 let resp = ServerControl::Error {
@@ -394,5 +441,47 @@ mod tests {
         assert!(RESERVED_SUBDOMAINS.contains("admin"));
         assert!(RESERVED_SUBDOMAINS.contains("ai-models"));
         assert!(!RESERVED_SUBDOMAINS.contains("myapp"));
+    }
+
+    #[test]
+    fn plan_limits_default_to_free() {
+        let claims = Claims {
+            sub: "user".into(),
+            aud: "authenticated".into(),
+            exp: 9999999999,
+            iat: 1,
+            email: None,
+            role: Some("authenticated".into()),
+            xpo_plan: None,
+            xpo_max_tunnels: None,
+            xpo_max_ttl_secs: None,
+            xpo_allow_custom_subdomain: None,
+        };
+
+        let limits = plan_limits_from_claims(&claims);
+        assert_eq!(limits.max_tunnels, 1);
+        assert_eq!(limits.max_ttl_secs, Some(3600));
+        assert!(!limits.allow_custom_subdomain);
+    }
+
+    #[test]
+    fn plan_limits_support_pro_defaults() {
+        let claims = Claims {
+            sub: "user".into(),
+            aud: "authenticated".into(),
+            exp: 9999999999,
+            iat: 1,
+            email: None,
+            role: Some("authenticated".into()),
+            xpo_plan: Some("pro".into()),
+            xpo_max_tunnels: None,
+            xpo_max_ttl_secs: None,
+            xpo_allow_custom_subdomain: Some(true),
+        };
+
+        let limits = plan_limits_from_claims(&claims);
+        assert_eq!(limits.max_tunnels, ABSOLUTE_MAX_TUNNELS_PER_USER);
+        assert_eq!(limits.max_ttl_secs, None);
+        assert!(limits.allow_custom_subdomain);
     }
 }
