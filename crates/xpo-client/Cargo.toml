@@ -41,6 +41,7 @@ fast_qr = "0.13"
 tempfile = "3"
 humantime = "2"
 serde = { version = "1", features = ["derive"] }
+regex = "1"
 
 [dev-dependencies]
 flate2 = "1"

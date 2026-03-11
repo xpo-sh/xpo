@@ -10,6 +10,8 @@ use xpo_tui::app::{BannerInfo, TuiApp};
 use xpo_tui::event::AppEvent;
 use xpo_tui::model::{ConnStatus, RequestLog};
 
+use crate::hmr::{HmrContext, HmrMode};
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: u16,
@@ -20,6 +22,7 @@ pub async fn run(
     cors: bool,
     password: Option<String>,
     ttl_secs: Option<u64>,
+    hmr_mode: HmrMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http_client = build_http_client();
     let use_tui = TuiApp::check_terminal_size();
@@ -65,6 +68,7 @@ pub async fn run(
             visible_rows,
             password.clone(),
             ttl_secs,
+            hmr_mode,
         )
         .await
         {
@@ -137,6 +141,7 @@ async fn connect_and_run(
     visible_rows: usize,
     password: Option<String>,
     ttl_secs: Option<u64>,
+    hmr_mode: HmrMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
         format!("ws://{server}")
@@ -192,6 +197,8 @@ async fn connect_and_run(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(ttl);
         let _ = app_tx.send(AppEvent::TtlDeadline(deadline));
     }
+
+    let hmr_context = HmrContext::from_tunnel_url(&tunnel_url, hmr_mode);
 
     if use_tui && first_connect {
         let mut ts = tui_state.lock().unwrap();
@@ -253,8 +260,9 @@ async fn connect_and_run(
                                         let relays = ws_relays.clone();
                                         let event_tx = app_tx.clone();
                                         let client_clone = client.clone();
+                                        let hmr_context = hmr_context.clone();
                                         tokio::spawn(async move {
-                                            let result = proxy_to_upstream(&client_clone, port, &payload, stream_id, &event_tx, cors).await;
+                                            let result = proxy_to_upstream(&client_clone, port, &payload, stream_id, &event_tx, cors, hmr_context).await;
                                             let resp_pkt = Packet::data(stream_id, result.response);
                                             let _ = tx.send(Message::Binary(resp_pkt.encode().into()));
                                             if let Some(relay) = result.ws_relay {
@@ -425,6 +433,7 @@ async fn proxy_to_upstream(
     stream_id: xpo_core::StreamId,
     event_tx: &std::sync::mpsc::Sender<AppEvent>,
     cors: bool,
+    hmr_context: Option<HmrContext>,
 ) -> ProxyResult {
     let start = std::time::Instant::now();
 
@@ -448,10 +457,19 @@ async fn proxy_to_upstream(
     };
 
     if is_ws_upgrade {
-        return proxy_ws_upgrade(port, raw_request, stream_id, event_tx, cors, start).await;
+        return proxy_ws_upgrade(
+            port,
+            raw_request,
+            stream_id,
+            event_tx,
+            cors,
+            start,
+            hmr_context.as_ref(),
+        )
+        .await;
     }
 
-    let response = proxy_http_reqwest(client, port, raw_request, cors).await;
+    let response = proxy_http_reqwest(client, port, raw_request, cors, hmr_context.as_ref()).await;
     let status = parse_response_status(&response);
     send_request_log(event_tx, &method, &path, status, start.elapsed());
 
@@ -461,6 +479,7 @@ async fn proxy_to_upstream(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_ws_upgrade(
     port: u16,
     raw_request: &[u8],
@@ -468,6 +487,7 @@ async fn proxy_ws_upgrade(
     event_tx: &std::sync::mpsc::Sender<AppEvent>,
     cors: bool,
     start: std::time::Instant,
+    hmr_context: Option<&HmrContext>,
 ) -> ProxyResult {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -487,7 +507,10 @@ async fn proxy_ws_upgrade(
         }
     };
 
-    let request_bytes = rewrite_host_header(raw_request, port);
+    let rewrite_origin = crate::hmr::should_rewrite_ws_origin(hmr_context, &path);
+    let origin_override = rewrite_origin.then(|| format!("http://localhost:{port}"));
+    let request_bytes =
+        rewrite_host_and_origin_headers(raw_request, port, origin_override.as_deref());
 
     if upstream.write_all(&request_bytes).await.is_err() {
         send_request_log(event_tx, &method, &path, 502, start.elapsed());
@@ -644,7 +667,11 @@ fn inject_cors_headers(raw_response: &[u8]) -> Vec<u8> {
     patched
 }
 
-fn rewrite_host_header(raw: &[u8], port: u16) -> Vec<u8> {
+fn rewrite_host_and_origin_headers(
+    raw: &[u8],
+    port: u16,
+    origin_override: Option<&str>,
+) -> Vec<u8> {
     let header_end = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
         Some(pos) => pos,
         None => return raw.to_vec(),
@@ -667,11 +694,19 @@ fn rewrite_host_header(raw: &[u8], port: u16) -> Vec<u8> {
         if line.is_empty() {
             continue;
         }
-        if line.to_ascii_lowercase().starts_with("host:") {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("host:") {
             if let Some((_, val)) = line.split_once(':') {
                 original_host = Some(val.trim().to_string());
             }
             patched.extend_from_slice(format!("Host: localhost:{port}\r\n").as_bytes());
+        } else if lower.starts_with("origin:") {
+            if let Some(origin_override) = origin_override {
+                patched.extend_from_slice(format!("Origin: {origin_override}\r\n").as_bytes());
+            } else {
+                patched.extend_from_slice(line.as_bytes());
+                patched.extend_from_slice(b"\r\n");
+            }
         } else {
             patched.extend_from_slice(line.as_bytes());
             patched.extend_from_slice(b"\r\n");
@@ -763,6 +798,7 @@ async fn proxy_http_reqwest(
     port: u16,
     raw_request: &[u8],
     cors: bool,
+    hmr_context: Option<&HmrContext>,
 ) -> Vec<u8> {
     let (method, path, headers, body) = match parse_raw_request(raw_request) {
         Some(parsed) => parsed,
@@ -782,6 +818,11 @@ async fn proxy_http_reqwest(
     for (name, value) in &headers {
         if name.eq_ignore_ascii_case("host") {
             original_host = Some(value.clone());
+            continue;
+        }
+        if name.eq_ignore_ascii_case("accept-encoding")
+            && crate::hmr::should_strip_accept_encoding(hmr_context, &method, &path)
+        {
             continue;
         }
         if name.eq_ignore_ascii_case("connection") {
@@ -847,7 +888,13 @@ async fn proxy_http_reqwest(
         }
     };
 
-    let mut result = serialize_response(status, &reason, &resp_headers, &body_bytes);
+    let (final_headers, final_body) =
+        match crate::hmr::maybe_rewrite_response(hmr_context, &path, &resp_headers, &body_bytes) {
+            Some(outcome) => (outcome.headers, outcome.body),
+            None => (resp_headers, body_bytes.to_vec()),
+        };
+
+    let mut result = serialize_response(status, &reason, &final_headers, &final_body);
 
     if cors {
         result = inject_cors_headers(&result);
@@ -876,7 +923,7 @@ mod tests {
     #[test]
     fn rewrite_host_header_replaces_host() {
         let raw = b"GET / HTTP/1.1\r\nHost: myapp.xpo.sh\r\nAccept: */*\r\n\r\n";
-        let patched = rewrite_host_header(raw, 5173);
+        let patched = rewrite_host_and_origin_headers(raw, 5173, None);
         let s = String::from_utf8_lossy(&patched);
         assert!(s.contains("Host: localhost:5173"), "Host must be rewritten");
         assert!(
@@ -892,7 +939,7 @@ mod tests {
         let mut raw =
             b"POST /api HTTP/1.1\r\nHost: test.xpo.sh\r\nContent-Length: 11\r\n\r\n".to_vec();
         raw.extend_from_slice(body);
-        let patched = rewrite_host_header(&raw, 3000);
+        let patched = rewrite_host_and_origin_headers(&raw, 3000, None);
         let header_end = patched.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let actual_body = &patched[header_end + 4..];
         assert_eq!(actual_body, body);
@@ -901,10 +948,20 @@ mod tests {
     #[test]
     fn rewrite_host_header_no_host() {
         let raw = b"GET / HTTP/1.1\r\nAccept: */*\r\n\r\n";
-        let patched = rewrite_host_header(raw, 3000);
+        let patched = rewrite_host_and_origin_headers(raw, 3000, None);
         let s = String::from_utf8_lossy(&patched);
         assert!(!s.contains("X-Forwarded-Host"));
         assert!(s.contains("Accept: */*"));
+    }
+
+    #[test]
+    fn rewrite_host_and_origin_headers_overrides_origin_when_requested() {
+        let raw = b"GET /ws HTTP/1.1\r\nHost: demo.xpo.sh\r\nOrigin: https://demo.xpo.sh\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+        let patched = rewrite_host_and_origin_headers(raw, 8080, Some("http://localhost:8080"));
+        let s = String::from_utf8_lossy(&patched);
+        assert!(s.contains("Host: localhost:8080"));
+        assert!(s.contains("Origin: http://localhost:8080"));
+        assert!(s.contains("X-Forwarded-Host: demo.xpo.sh"));
     }
 
     #[test]
@@ -1110,7 +1167,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET /hello HTTP/1.1\r\nHost: myapp.xpo.sh\r\nAccept: */*\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("200 OK") || s.contains("200 ok"), "status: {s}");
         assert!(s.contains("ok"));
@@ -1130,7 +1187,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("200"));
         assert!(!s.to_ascii_lowercase().contains("transfer-encoding"));
@@ -1165,7 +1222,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\nAccept-Encoding: gzip\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(
             s.to_ascii_lowercase().contains("content-encoding: gzip")
@@ -1181,7 +1238,7 @@ mod tests {
     async fn proxy_http_reqwest_connection_refused() {
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
-        let response = proxy_http_reqwest(&client, 19999, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, 19999, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("502"));
     }
@@ -1205,7 +1262,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"POST /api HTTP/1.1\r\nHost: test.xpo.sh\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"name\":\"test\"}";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("201"));
     }
@@ -1224,7 +1281,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("302"), "redirect must NOT be followed");
     }
@@ -1249,7 +1306,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET /img.png HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let header_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let body = &response[header_end + 4..];
         assert_eq!(
@@ -1285,7 +1342,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: fi5f4h.xpo.sh\r\nAccept: */*\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(
             s.contains("200"),
@@ -1321,7 +1378,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: test.xpo.sh\r\nAccept-Encoding: gzip\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let header_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let body = &response[header_end + 4..];
         assert_eq!(
@@ -1346,7 +1403,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"DELETE /item/1 HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("204"));
     }
@@ -1365,7 +1422,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET /missing HTTP/1.1\r\nHost: test.xpo.sh\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("404"));
         assert!(s.contains("not found"));
@@ -1389,7 +1446,7 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET /api HTTP/1.1\r\nHost: test.xpo.sh\r\nAuthorization: Bearer token123\r\nX-Custom: myvalue\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response).to_ascii_lowercase();
         assert!(s.contains("set-cookie"), "Set-Cookie must be preserved");
         assert!(s.contains("sid=abc"), "cookie value must be preserved");
@@ -1421,8 +1478,67 @@ mod tests {
         });
         let client = build_http_client();
         let raw_request = b"GET / HTTP/1.1\r\nHost: myapp.xpo.sh:443\r\n\r\n";
-        let response = proxy_http_reqwest(&client, port, raw_request, false).await;
+        let response = proxy_http_reqwest(&client, port, raw_request, false, None).await;
         let s = String::from_utf8_lossy(&response);
         assert!(s.contains("200"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_hmr_candidate_strips_accept_encoding() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+            assert!(
+                !req.contains("accept-encoding:"),
+                "hmr asset should request identity"
+            );
+            assert!(req.contains("x-forwarded-host: demo.xpo.sh"));
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: 12\r\nConnection: close\r\n\r\nconsole.log(1)";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let hmr_context = crate::hmr::HmrContext::new("demo.xpo.sh".into(), 443, "https".into());
+        let raw_request =
+            b"GET /app.js HTTP/1.1\r\nHost: demo.xpo.sh\r\nAccept-Encoding: gzip, br\r\n\r\n";
+        let response =
+            proxy_http_reqwest(&client, port, raw_request, false, Some(&hmr_context)).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("200 OK"));
+    }
+
+    #[tokio::test]
+    async fn proxy_http_reqwest_rewrites_webpack_bundle_and_strips_etag() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await.unwrap();
+            let body = r#"var __resourceQuery="?protocol=ws%3A&hostname=0.0.0.0&port=8080&pathname=%2Fws&logging=none";__webpack_require__("./node_modules/webpack-dev-server/client/index.js?protocol=ws%3A&hostname=0.0.0.0&port=8080&pathname=%2Fws");function x(){return "createSocketURL"}"#;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nETag: abc123\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body.as_bytes()).await.unwrap();
+        });
+        let client = build_http_client();
+        let hmr_context = crate::hmr::HmrContext::new("demo.xpo.sh".into(), 443, "https".into());
+        let raw_request =
+            b"GET /app.js HTTP/1.1\r\nHost: demo.xpo.sh\r\nAccept-Encoding: gzip, br\r\n\r\n";
+        let response =
+            proxy_http_reqwest(&client, port, raw_request, false, Some(&hmr_context)).await;
+        let s = String::from_utf8_lossy(&response);
+        assert!(s.contains("hostname=demo.xpo.sh&port=443&pathname=%2Fws"));
+        assert!(
+            !s.to_ascii_lowercase().contains("\r\netag:"),
+            "etag must be stripped after rewrite"
+        );
     }
 }

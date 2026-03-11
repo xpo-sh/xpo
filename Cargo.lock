@@ -3803,6 +3803,7 @@ dependencies = [
  "indicatif",
  "rand 0.10.0",
  "rcgen",
+ "regex",
  "reqwest",
  "rustls",
  "rustls-pemfile",

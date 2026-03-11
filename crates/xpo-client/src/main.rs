@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 mod auth;
 mod dev;
 mod error_page;
+mod hmr;
 mod list;
 mod tunnel;
 mod uninstall;
@@ -40,6 +41,8 @@ enum Commands {
         password: Option<String>,
         #[arg(long, help = "Tunnel TTL (e.g. 30m, 2h)")]
         ttl: Option<String>,
+        #[arg(long, value_enum, default_value_t = hmr::HmrMode::Auto, help = "HMR compatibility mode")]
+        hmr: hmr::HmrMode,
         #[arg(long, help = "Wait for upstream port")]
         wait: bool,
         #[arg(long, default_value = "15s", help = "Wait timeout")]
@@ -162,6 +165,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             cors,
             password,
             ttl,
+            hmr,
             wait,
             wait_timeout,
         } => {
@@ -191,6 +195,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 cors,
                 password,
                 ttl_secs,
+                hmr,
             )
             .await
         }
