@@ -1,43 +1,50 @@
 services:
-  xpo-server:
+  xpo-server-local:
     build: .
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
     environment:
-      - HTTP_PORT=8080
-      - WS_PORT=8081
-      - BASE_DOMAIN=localhost
-      - SCHEME=http
-      - REGION=local
-      - JWT_SECRET=xpo-dev-secret-for-local-testing
-      - RUST_LOG=xpo_server=info
+      HTTP_BIND: 0.0.0.0
+      HTTP_PORT: 8080
+      WS_BIND: 0.0.0.0
+      WS_PORT: 8081
+      BASE_DOMAIN: localhost
+      SCHEME: http
+      REGION: local
+      JWT_SECRET: xpo-dev-secret-for-local-testing
+      RUST_LOG: xpo_server=info
     restart: unless-stopped
+    profiles:
+      - dev
 
-  xpo-server-tls:
+  xpo-server-public:
     build: .
+    profiles:
+      - public
     ports:
       - "443:443"
       - "8081:8081"
     environment:
-      - HTTP_PORT=443
-      - WS_PORT=8081
-      - BASE_DOMAIN=xpo.sh
-      - SCHEME=https
-      - REGION=eu1
-      - RUST_LOG=xpo_server=info
-      - ACME_ENABLED=true
-      - ACME_EMAIL=${ACME_EMAIL}
-      - ACME_STAGING=false
-      - CF_API_TOKEN=${CF_API_TOKEN}
-      - CF_ZONE_ID=${CF_ZONE_ID}
-      - JWT_SECRET=${JWT_SECRET}
+      HTTP_BIND: 0.0.0.0
+      HTTP_PORT: 443
+      WS_BIND: 0.0.0.0
+      WS_PORT: 8081
+      BASE_DOMAIN: ${PUBLIC_BASE_DOMAIN:?set PUBLIC_BASE_DOMAIN}
+      SCHEME: https
+      REGION: ${PUBLIC_REGION:-public}
+      RUST_LOG: xpo_server=info
+      ACME_ENABLED: "true"
+      ACME_EMAIL: ${PUBLIC_ACME_EMAIL:?set PUBLIC_ACME_EMAIL}
+      ACME_STAGING: ${PUBLIC_ACME_STAGING:-false}
+      CF_API_TOKEN: ${PUBLIC_CF_API_TOKEN:?set PUBLIC_CF_API_TOKEN}
+      CF_ZONE_ID: ${PUBLIC_CF_ZONE_ID:?set PUBLIC_CF_ZONE_ID}
+      JWT_PUBLIC_KEY_PATH: /run/secrets/xpo/jwt-public.pem
     volumes:
       - certs:/etc/xpo/certs
       - acme:/etc/xpo/acme
+      - "${JWT_PUBLIC_KEY_FILE:?set JWT_PUBLIC_KEY_FILE to a PEM public key path}:/run/secrets/xpo/jwt-public.pem:ro"
     restart: unless-stopped
-    profiles:
-      - production
 
 volumes:
   certs:

@@ -18,7 +18,7 @@ Environment=BASE_DOMAIN=xpo.sh
 Environment=SCHEME=https
 Environment=REGION=eu1
 Environment=RUST_LOG=xpo_server=info
-Environment=ACME_ENABLED=true
+Environment=ACME_ENABLED=false
 Environment=ACME_STAGING=false
 
 EnvironmentFile=-/etc/xpo/server.env
@@ -27,7 +27,7 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/etc/xpo
+ReadWritePaths=/etc/xpo /var/log/xpo
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
