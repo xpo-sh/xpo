@@ -21,6 +21,7 @@
 - [Install](#install)
 - [Public Tunnels](#public-tunnels)
 - [Local HTTPS](#local-https)
+- [Self-Hosting](#self-hosting)
 - [Why xpo?](#why-xpo)
 - [Features](#features)
 - [Commands](#commands)
@@ -92,6 +93,40 @@ $ xpo dev 3000 -n myapp
 
   q:quit  ↑↓:scroll  f:filter  x:clear  ?:help
 ```
+
+## Self-Hosting
+
+Basic self-hosting is available for the tunnel server. This is the edge component only: you bring your own domain, auth provider, DNS, and ops.
+
+1. Prepare a JWT public key PEM from your auth provider
+2. Point `*.your-domain.tld` to your server
+3. Export the required env vars
+4. Start the public profile
+
+```bash
+cd xpo
+
+export PUBLIC_BASE_DOMAIN=tunnel.example.com
+export PUBLIC_REGION=home
+export PUBLIC_ACME_EMAIL=ops@example.com
+export PUBLIC_CF_API_TOKEN=your_cloudflare_api_token
+export PUBLIC_CF_ZONE_ID=your_cloudflare_zone_id
+export JWT_PUBLIC_KEY_FILE=/absolute/path/to/jwt-public.pem
+
+docker compose --profile public up -d xpo-server-public
+```
+
+Required files:
+
+- `JWT_PUBLIC_KEY_FILE` must point to a PEM public key used by your auth provider
+- Cloudflare DNS must be able to create `_acme-challenge` TXT records for your zone
+
+Important notes:
+
+- `xpo.sh` cloud pricing does not apply to self-hosted deployments
+- Self-hosted runs under the MIT license and does not enforce Free/Pro limits
+- You operate auth, TLS, uptime, abuse prevention, and support yourself
+- `xpo.sh` hosted-only features such as managed billing, hosted dashboard, and managed multi-region do not automatically appear in self-hosted mode
 
 ## Why xpo?
 
