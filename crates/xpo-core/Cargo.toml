@@ -17,3 +17,4 @@ fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = { version = "0.14", features = ["pem"] }

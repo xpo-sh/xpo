@@ -3828,6 +3828,7 @@ version = "0.3.6-alpha"
 dependencies = [
  "fs2",
  "jsonwebtoken",
+ "rcgen",
  "serde",
  "serde_json",
  "tempfile",

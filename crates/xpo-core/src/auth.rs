@@ -89,10 +89,16 @@ pub fn create_test_token(secret: &str, claims: &Claims) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 
-    const RSA_PRIVATE_KEY: &str = "REDACTED_TEST_KEY";
-    const RSA_PUBLIC_KEY: &str = "REDACTED_TEST_KEY";
     const TEST_SECRET: &str = "xpo-test-secret-32-chars-long!!!";
+
+    fn generate_ec_keypair() -> (String, String) {
+        let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let private_key_pem = key_pair.serialize_pem();
+        let public_key_pem = key_pair.public_key_pem();
+        (private_key_pem, public_key_pem)
+    }
 
     fn test_claims(exp_offset: i64) -> Claims {
         let now = std::time::SystemTime::now()
@@ -153,11 +159,12 @@ mod tests {
     }
 
     #[test]
-    fn valid_rsa_token() {
+    fn valid_public_key_token() {
         let claims = test_claims(3600);
-        let key = EncodingKey::from_rsa_pem(RSA_PRIVATE_KEY.as_bytes()).unwrap();
-        let token = encode(&Header::new(Algorithm::RS256), &claims, &key).unwrap();
-        let validator = JwtValidator::new(RSA_PUBLIC_KEY);
+        let (private_key_pem, public_key_pem) = generate_ec_keypair();
+        let key = EncodingKey::from_ec_pem(private_key_pem.as_bytes()).unwrap();
+        let token = encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap();
+        let validator = JwtValidator::new(&public_key_pem);
         let result = validator.validate(&token).unwrap();
         assert_eq!(result.sub, "user-uuid-123");
     }
@@ -166,7 +173,8 @@ mod tests {
     fn public_key_validator_rejects_hs256_token() {
         let claims = test_claims(3600);
         let token = create_test_token(TEST_SECRET, &claims);
-        let validator = JwtValidator::new(RSA_PUBLIC_KEY);
+        let (_private_key_pem, public_key_pem) = generate_ec_keypair();
+        let validator = JwtValidator::new(&public_key_pem);
         assert!(validator.validate(&token).is_err());
     }
 
