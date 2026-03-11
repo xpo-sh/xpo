@@ -123,16 +123,18 @@ fn resolve_jwt_key_material(
         return read_public_key_from_path(&public_key_path).and_then(ensure_public_key_pem);
     }
 
-    if let Some(jwt_secret) = jwt_secret {
-        return Ok(jwt_secret);
+    if is_local {
+        return Ok(jwt_secret.unwrap_or_else(|| DEFAULT_JWT_SECRET.to_string()));
     }
 
-    if is_local {
-        return Ok(DEFAULT_JWT_SECRET.to_string());
+    if jwt_secret.is_some() {
+        return Err(
+            "JWT_SECRET is only allowed for localhost or loopback development. Use JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH for public deployments.".into(),
+        );
     }
 
     Err(format!(
-        "JWT_PUBLIC_KEY, JWT_PUBLIC_KEY_PATH, or JWT_SECRET must be set when BASE_DOMAIN={base_domain}."
+        "JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH must be set when BASE_DOMAIN={base_domain}."
     ))
 }
 
@@ -202,16 +204,15 @@ mod tests {
 
     #[test]
     fn public_domain_rejects_shared_secret() {
-        let jwt_key =
-            resolve_jwt_key_material("xpo.sh", Some("super-secret".into()), None, None).unwrap();
-        assert_eq!(jwt_key, "super-secret");
+        let err = resolve_jwt_key_material("xpo.sh", Some("super-secret".into()), None, None)
+            .unwrap_err();
+        assert!(err.contains("JWT_SECRET"));
     }
 
     #[test]
     fn public_domain_requires_public_key() {
         let err = resolve_jwt_key_material("xpo.sh", None, None, None).unwrap_err();
         assert!(err.contains("JWT_PUBLIC_KEY"));
-        assert!(err.contains("JWT_SECRET"));
     }
 
     #[test]
