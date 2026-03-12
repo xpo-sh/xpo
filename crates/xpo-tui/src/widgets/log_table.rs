@@ -5,14 +5,21 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Row, Table};
 use ratatui::Frame;
 use time::macros::format_description;
 
-use crate::model::TuiState;
+use crate::model::{PanelFocus, TuiState, ViewMode};
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let is_focused = state.view_mode == ViewMode::Detail && state.focus == PanelFocus::LogTable;
+    let border_style = if is_focused {
+        Theme::accent()
+    } else {
+        Theme::border()
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Theme::border())
+        .border_style(border_style)
         .title(Span::styled("Requests", Theme::accent_bold()))
         .padding(Padding::horizontal(1));
 

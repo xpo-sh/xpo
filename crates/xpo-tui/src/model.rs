@@ -29,6 +29,12 @@ pub enum ViewMode {
     Help,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PanelFocus {
+    LogTable,
+    Detail,
+}
+
 pub struct TuiState {
     pub requests: VecDeque<RequestLog>,
     pub selected: usize,
@@ -44,6 +50,8 @@ pub struct TuiState {
     pub success_count: u64,
     pub tick_request_count: u64,
     pub max_requests: usize,
+    pub detail_scroll: usize,
+    pub focus: PanelFocus,
 }
 
 impl TuiState {
@@ -63,6 +71,8 @@ impl TuiState {
             success_count: 0,
             tick_request_count: 0,
             max_requests,
+            detail_scroll: 0,
+            focus: PanelFocus::LogTable,
         }
     }
 
@@ -153,6 +163,8 @@ impl TuiState {
         self.total_requests = 0;
         self.total_duration_ms = 0;
         self.success_count = 0;
+        self.detail_scroll = 0;
+        self.focus = PanelFocus::LogTable;
     }
 
     pub fn select_up(&mut self) {
@@ -184,5 +196,93 @@ impl TuiState {
         if self.selected >= max {
             self.auto_scroll = true;
         }
+    }
+
+    pub fn detail_scroll_up(&mut self) {
+        if self.detail_scroll > 0 {
+            self.detail_scroll -= 1;
+        }
+    }
+
+    pub fn detail_scroll_down(&mut self, content_height: usize, viewport_height: usize) {
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        if self.detail_scroll < max_scroll {
+            self.detail_scroll += 1;
+        }
+    }
+
+    pub fn reset_detail_scroll(&mut self) {
+        self.detail_scroll = 0;
+    }
+
+    pub fn selected_request(&self) -> Option<&RequestLog> {
+        let filtered = self.filtered_requests();
+        filtered.get(self.selected).map(|(_, req)| *req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_log(id: u64) -> RequestLog {
+        RequestLog {
+            id,
+            timestamp: time::OffsetDateTime::now_utc(),
+            method: "GET".to_string(),
+            path: "/test".to_string(),
+            status: 200,
+            duration_ms: 10,
+            request_headers: vec![],
+            response_headers: vec![],
+            body_preview: None,
+            body_size: 0,
+        }
+    }
+
+    #[test]
+    fn detail_scroll_up_at_zero() {
+        let mut state = TuiState::new(100, 14);
+        state.detail_scroll = 0;
+        state.detail_scroll_up();
+        assert_eq!(state.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_down_respects_max() {
+        let mut state = TuiState::new(100, 14);
+        state.detail_scroll_down(10, 10);
+        assert_eq!(state.detail_scroll, 0);
+        state.detail_scroll_down(20, 10);
+        assert_eq!(state.detail_scroll, 1);
+    }
+
+    #[test]
+    fn reset_detail_scroll() {
+        let mut state = TuiState::new(100, 14);
+        state.detail_scroll = 5;
+        state.reset_detail_scroll();
+        assert_eq!(state.detail_scroll, 0);
+    }
+
+    #[test]
+    fn selected_request_returns_correct() {
+        let mut state = TuiState::new(100, 14);
+        state.push_request(make_log(1));
+        state.push_request(make_log(2));
+        state.selected = 0;
+        assert_eq!(state.selected_request().unwrap().id, 1);
+        state.selected = 1;
+        assert_eq!(state.selected_request().unwrap().id, 2);
+    }
+
+    #[test]
+    fn clear_resets_detail_state() {
+        let mut state = TuiState::new(100, 14);
+        state.detail_scroll = 5;
+        state.focus = PanelFocus::Detail;
+        state.clear();
+        assert_eq!(state.detail_scroll, 0);
+        assert_eq!(state.focus, PanelFocus::LogTable);
     }
 }

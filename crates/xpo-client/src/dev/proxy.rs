@@ -118,10 +118,14 @@ pub async fn run(
                 Ok(t) => t,
                 Err(_) => return,
             };
-            let mut app = TuiApp::new(banner, max_logs, visible_rows);
+            let mut app = TuiApp::new(banner, max_logs, visible_rows, false, false);
 
             loop {
                 let _ = terminal.draw(|frame| xpo_tui::render::draw(frame, &app));
+                if app.needs_redraw {
+                    let _ = terminal.clear();
+                    app.needs_redraw = false;
+                }
 
                 match events.next() {
                     Ok(event) => {
@@ -310,20 +314,6 @@ fn error_page(status_code: u16, title: &str, message: &str, hint: &str) -> Strin
     )
 }
 
-fn parse_headers(raw: &[u8]) -> Vec<(String, String)> {
-    let s = String::from_utf8_lossy(raw);
-    let mut headers = Vec::new();
-    for line in s.split("\r\n").skip(1) {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((key, val)) = line.split_once(':') {
-            headers.push((key.trim().to_string(), val.trim().to_string()));
-        }
-    }
-    headers
-}
-
 #[allow(clippy::too_many_arguments)]
 fn send_request_log(
     tx: &std::sync::mpsc::Sender<AppEvent>,
@@ -333,6 +323,7 @@ fn send_request_log(
     duration: std::time::Duration,
     req_headers: Vec<(String, String)>,
     resp_headers: Vec<(String, String)>,
+    body_preview: Option<String>,
     body_size: u64,
 ) {
     let log = RequestLog {
@@ -344,7 +335,7 @@ fn send_request_log(
         duration_ms: duration.as_millis() as u64,
         request_headers: req_headers,
         response_headers: resp_headers,
-        body_preview: None,
+        body_preview,
         body_size,
     };
     let _ = tx.send(AppEvent::Request(log));
@@ -393,7 +384,7 @@ async fn proxy_connection(
     let is_ws_upgrade = header_str
         .to_ascii_lowercase()
         .contains("upgrade: websocket");
-    let req_headers = parse_headers(headers_with_sep);
+    let req_headers = xpo_core::parse_http_headers(headers_with_sep);
     let rewritten = rewrite_host_header(headers_with_sep, upstream_port);
 
     let mut upstream = match TcpStream::connect(("localhost", upstream_port)).await {
@@ -415,6 +406,7 @@ async fn proxy_connection(
                 start.elapsed(),
                 req_headers,
                 vec![],
+                None,
                 0,
             );
             return Ok(());
@@ -433,9 +425,12 @@ async fn proxy_connection(
         Arc::new(std::sync::Mutex::new(vec![]));
     let captured_body_size: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let captured_body_preview: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let status_for_copy = captured_status.clone();
     let resp_headers_for_copy = captured_resp_headers.clone();
     let body_size_for_copy = captured_body_size.clone();
+    let body_preview_for_copy = captured_body_preview.clone();
 
     let client_to_server = async {
         tokio::io::copy(&mut tls_read, &mut up_write).await?;
@@ -484,12 +479,32 @@ async fn proxy_connection(
             .to_string();
         *status_for_copy.lock().unwrap() = status;
 
-        *resp_headers_for_copy.lock().unwrap() = parse_headers(&resp_buf);
-        if let Some(cl) = parse_headers(&resp_buf)
+        *resp_headers_for_copy.lock().unwrap() = xpo_core::parse_http_headers(&resp_buf);
+        if let Some(cl) = xpo_core::parse_http_headers(&resp_buf)
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
         {
             body_size_for_copy.store(cl.1.parse().unwrap_or(0), Ordering::Relaxed);
+        }
+
+        if let Some(hdr_end) = resp_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let body_offset = hdr_end + 4;
+            if body_offset >= resp_buf.len() {
+                let mut extra = [0u8; 4096];
+                if let Ok(Ok(n)) = tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    up_read.read(&mut extra),
+                )
+                .await
+                {
+                    if n > 0 {
+                        resp_buf.extend_from_slice(&extra[..n]);
+                    }
+                }
+            }
+            let body_bytes = &resp_buf[body_offset..];
+            *body_preview_for_copy.lock().unwrap() =
+                xpo_core::extract_body_preview(body_bytes, body_bytes.len());
         }
 
         let _ = tls_write.write_all(&resp_buf).await;
@@ -505,6 +520,7 @@ async fn proxy_connection(
     let status_code: u16 = status_str.parse().unwrap_or(0);
     let resp_headers = captured_resp_headers.lock().unwrap().clone();
     let body_size = captured_body_size.load(Ordering::Relaxed);
+    let body_preview = captured_body_preview.lock().unwrap().clone();
 
     send_request_log(
         event_tx,
@@ -514,6 +530,7 @@ async fn proxy_connection(
         duration,
         req_headers,
         resp_headers,
+        body_preview,
         body_size,
     );
 
@@ -789,6 +806,7 @@ mod tests {
                 std::time::Duration::from_millis(10),
                 vec![],
                 vec![],
+                None,
                 0,
             );
         }

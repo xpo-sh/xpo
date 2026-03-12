@@ -7,7 +7,7 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::event::{create_event_channel, AppEvent, EventHandler};
-use crate::model::{TuiState, ViewMode};
+use crate::model::{PanelFocus, TuiState, ViewMode};
 
 pub struct BannerInfo {
     pub title: String,
@@ -24,19 +24,31 @@ pub struct TuiApp {
     pub should_quit: bool,
     pub start_time: std::time::Instant,
     pub ttl_deadline: Option<std::time::Instant>,
+    pub is_share: bool,
+    pub is_pro: bool,
+    pub needs_redraw: bool,
 }
 
 const MIN_COLS: u16 = 60;
 const MIN_ROWS: u16 = 15;
 
 impl TuiApp {
-    pub fn new(banner: BannerInfo, max_requests: usize, visible_rows: usize) -> Self {
+    pub fn new(
+        banner: BannerInfo,
+        max_requests: usize,
+        visible_rows: usize,
+        is_share: bool,
+        is_pro: bool,
+    ) -> Self {
         Self {
             state: TuiState::new(max_requests, visible_rows),
             banner,
             should_quit: false,
             start_time: std::time::Instant::now(),
             ttl_deadline: None,
+            is_share,
+            is_pro,
+            needs_redraw: false,
         }
     }
 
@@ -93,7 +105,8 @@ impl TuiApp {
         match self.state.view_mode {
             ViewMode::Filter => self.handle_filter_key(key),
             ViewMode::Help => self.handle_help_key(key),
-            _ => self.handle_normal_key(key),
+            ViewMode::Detail => self.handle_detail_key(key),
+            ViewMode::Normal => self.handle_normal_key(key),
         }
     }
 
@@ -105,6 +118,13 @@ impl TuiApp {
             KeyCode::Char('?') => self.state.view_mode = ViewMode::Help,
             KeyCode::Up | KeyCode::Char('k') => self.state.select_up(),
             KeyCode::Down | KeyCode::Char('j') => self.state.select_down(),
+            KeyCode::Enter => {
+                if !self.state.filtered_requests().is_empty() {
+                    self.state.view_mode = ViewMode::Detail;
+                    self.state.focus = PanelFocus::Detail;
+                    self.state.detail_scroll = 0;
+                }
+            }
             _ => {}
         }
     }
@@ -139,6 +159,63 @@ impl TuiApp {
             }
             _ => {}
         }
+    }
+
+    fn handle_detail_key(&mut self, key: crossterm::event::KeyEvent) {
+        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let is_wide = cols >= 100;
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.state.view_mode = ViewMode::Normal;
+                self.state.focus = PanelFocus::LogTable;
+            }
+            KeyCode::Tab if is_wide => {
+                self.state.focus = match self.state.focus {
+                    PanelFocus::LogTable => PanelFocus::Detail,
+                    PanelFocus::Detail => PanelFocus::LogTable,
+                };
+            }
+            KeyCode::Up | KeyCode::Char('k') => match self.state.focus {
+                PanelFocus::LogTable => {
+                    let old_selected = self.state.selected;
+                    self.state.select_up();
+                    if self.state.selected != old_selected {
+                        self.state.reset_detail_scroll();
+                    }
+                }
+                PanelFocus::Detail => self.state.detail_scroll_up(),
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.state.focus {
+                PanelFocus::LogTable => {
+                    let old_selected = self.state.selected;
+                    self.state.select_down();
+                    if self.state.selected != old_selected {
+                        self.state.reset_detail_scroll();
+                    }
+                }
+                PanelFocus::Detail => {
+                    self.state.detail_scroll_down(
+                        self.detail_content_height(),
+                        self.detail_viewport_height(),
+                    );
+                }
+            },
+            _ => {}
+        }
+    }
+
+    fn detail_content_height(&self) -> usize {
+        self.state
+            .selected_request()
+            .map(crate::widgets::detail_panel::content_line_count)
+            .unwrap_or(0)
+    }
+
+    fn detail_viewport_height(&self) -> usize {
+        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let height = std::cmp::min(rows.saturating_sub(2), 24) as usize;
+        height.saturating_sub(8)
     }
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {

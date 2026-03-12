@@ -195,6 +195,7 @@ async fn connect_and_run(
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
     let token = get_token().await;
+    let is_pro = is_pro_from_token(&token);
     let auth = ClientControl::Auth { token };
     ws_write.send(Message::Text(auth.to_json()?.into())).await?;
 
@@ -263,7 +264,7 @@ async fn connect_and_run(
             let qf = quit_flag.clone();
 
             ts.handle = Some(std::thread::spawn(move || {
-                run_tui_loop(banner, max_logs, visible_rows, events, &qf);
+                run_tui_loop(banner, max_logs, visible_rows, events, &qf, is_pro);
             }));
         }
     } else if !use_tui && first_connect {
@@ -442,15 +443,20 @@ fn run_tui_loop(
     visible_rows: usize,
     events: xpo_tui::event::EventHandler,
     quit_flag: &Arc<AtomicBool>,
+    is_pro: bool,
 ) {
     let mut terminal = match TuiApp::init_terminal() {
         Ok(t) => t,
         Err(_) => return,
     };
-    let mut app = TuiApp::new(banner, max_logs, visible_rows);
+    let mut app = TuiApp::new(banner, max_logs, visible_rows, true, is_pro);
 
     loop {
         let _ = terminal.draw(|frame| xpo_tui::render::draw(frame, &app));
+        if app.needs_redraw {
+            let _ = terminal.clear();
+            app.needs_redraw = false;
+        }
 
         match events.next() {
             Ok(event) => {
@@ -551,7 +557,17 @@ async fn proxy_to_upstream(
 
     if cors && is_cors_preflight(raw_request) {
         let response = build_cors_preflight_response();
-        send_request_log(event_tx, &method, &path, 204, start.elapsed());
+        send_request_log(
+            event_tx,
+            &method,
+            &path,
+            204,
+            start.elapsed(),
+            vec![],
+            vec![],
+            None,
+            0,
+        );
         return ProxyResult {
             response,
             ws_relay: None,
@@ -578,7 +594,19 @@ async fn proxy_to_upstream(
 
     let response = proxy_http_reqwest(client, port, raw_request, cors, hmr_context.as_ref()).await;
     let status = parse_response_status(&response);
-    send_request_log(event_tx, &method, &path, status, start.elapsed());
+    let req_headers = xpo_core::parse_http_headers(raw_request);
+    let (resp_headers, body_preview, body_size) = extract_response_detail(&response);
+    send_request_log(
+        event_tx,
+        &method,
+        &path,
+        status,
+        start.elapsed(),
+        req_headers,
+        resp_headers,
+        body_preview,
+        body_size,
+    );
 
     ProxyResult {
         response,
@@ -606,7 +634,17 @@ async fn proxy_ws_upgrade(
     let mut upstream = match TcpStream::connect(("localhost", port)).await {
         Ok(s) => s,
         Err(_) => {
-            send_request_log(event_tx, &method, &path, 502, start.elapsed());
+            send_request_log(
+                event_tx,
+                &method,
+                &path,
+                502,
+                start.elapsed(),
+                vec![],
+                vec![],
+                None,
+                0,
+            );
             return ProxyResult {
                 response: crate::error_page::error_response(502, "upstream is down", ".sh"),
                 ws_relay: None,
@@ -620,7 +658,17 @@ async fn proxy_ws_upgrade(
         rewrite_host_and_origin_headers(raw_request, port, origin_override.as_deref());
 
     if upstream.write_all(&request_bytes).await.is_err() {
-        send_request_log(event_tx, &method, &path, 502, start.elapsed());
+        send_request_log(
+            event_tx,
+            &method,
+            &path,
+            502,
+            start.elapsed(),
+            vec![],
+            vec![],
+            None,
+            0,
+        );
         return ProxyResult {
             response: crate::error_page::error_response(502, "upstream is down", ".sh"),
             ws_relay: None,
@@ -638,7 +686,17 @@ async fn proxy_ws_upgrade(
                 if append_limited_bytes(&mut response, &buf[..n], MAX_WS_UPGRADE_RESPONSE_SIZE)
                     .is_err()
                 {
-                    send_request_log(event_tx, &method, &path, 502, start.elapsed());
+                    send_request_log(
+                        event_tx,
+                        &method,
+                        &path,
+                        502,
+                        start.elapsed(),
+                        vec![],
+                        vec![],
+                        None,
+                        0,
+                    );
                     return ProxyResult {
                         response: crate::error_page::error_response(
                             502,
@@ -655,7 +713,18 @@ async fn proxy_ws_upgrade(
                         response = inject_cors_headers(&response);
                     }
                     let status = parse_response_status(&response);
-                    send_request_log(event_tx, &method, &path, status, start.elapsed());
+                    let req_headers = xpo_core::parse_http_headers(raw_request);
+                    send_request_log(
+                        event_tx,
+                        &method,
+                        &path,
+                        status,
+                        start.elapsed(),
+                        req_headers,
+                        vec![],
+                        None,
+                        0,
+                    );
                     return ProxyResult {
                         response,
                         ws_relay: Some(WsRelay {
@@ -673,7 +742,19 @@ async fn proxy_ws_upgrade(
         response = inject_cors_headers(&response);
     }
     let status = parse_response_status(&response);
-    send_request_log(event_tx, &method, &path, status, start.elapsed());
+    let req_headers = xpo_core::parse_http_headers(raw_request);
+    let (resp_headers, body_preview, body_size) = extract_response_detail(&response);
+    send_request_log(
+        event_tx,
+        &method,
+        &path,
+        status,
+        start.elapsed(),
+        req_headers,
+        resp_headers,
+        body_preview,
+        body_size,
+    );
     ProxyResult {
         response,
         ws_relay: None,
@@ -689,12 +770,30 @@ fn parse_response_status(raw_response: &[u8]) -> u16 {
         .unwrap_or(0)
 }
 
+fn extract_response_detail(raw: &[u8]) -> (Vec<(String, String)>, Option<String>, u64) {
+    let headers = xpo_core::parse_http_headers(raw);
+    let body_start = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
+    match body_start {
+        Some(start) if start < raw.len() => {
+            let body = &raw[start..];
+            let preview = xpo_core::extract_body_preview(body, 4096);
+            (headers, preview, body.len() as u64)
+        }
+        _ => (headers, None, 0),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn send_request_log(
     tx: &std::sync::mpsc::Sender<AppEvent>,
     method: &str,
     path: &str,
     status: u16,
     duration: std::time::Duration,
+    request_headers: Vec<(String, String)>,
+    response_headers: Vec<(String, String)>,
+    body_preview: Option<String>,
+    body_size: u64,
 ) {
     let log = RequestLog {
         id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -703,10 +802,10 @@ fn send_request_log(
         path: path.to_string(),
         status,
         duration_ms: duration.as_millis() as u64,
-        request_headers: vec![],
-        response_headers: vec![],
-        body_preview: None,
-        body_size: 0,
+        request_headers,
+        response_headers,
+        body_preview,
+        body_size,
     };
     let _ = tx.send(AppEvent::Request(log));
 }
@@ -1061,6 +1160,18 @@ async fn get_token() -> String {
             std::process::exit(1);
         }
     }
+}
+
+fn is_pro_from_token(token: &str) -> bool {
+    fn inner(token: &str) -> Option<bool> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = token.split('.').nth(1)?;
+        let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+        let plan = value.get("xpo_plan")?.as_str()?;
+        Some(plan == "pro")
+    }
+    inner(token).unwrap_or(false)
 }
 
 #[cfg(test)]

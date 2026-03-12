@@ -31,7 +31,7 @@ enum Commands {
         subdomain: Option<String>,
         #[arg(short, long)]
         domain: Option<String>,
-        #[arg(long, default_value = "500")]
+        #[arg(long, default_value = "200")]
         log_max: usize,
         #[arg(long, default_value = "14")]
         log_visible: usize,
@@ -83,7 +83,7 @@ struct DevArgs {
     #[arg(short, long)]
     name: Option<String>,
 
-    #[arg(long, default_value = "500")]
+    #[arg(long, default_value = "200")]
     log_max: usize,
     #[arg(long, default_value = "10")]
     log_visible: usize,

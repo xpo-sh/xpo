@@ -3,11 +3,25 @@ use ratatui::Frame;
 
 use crate::app::TuiApp;
 use crate::model::ViewMode;
-use crate::widgets::{banner, help_overlay, keybinds, log_table, qr_panel};
+use crate::widgets::{banner, detail_panel, help_overlay, keybinds, log_table, qr_panel};
 
 pub fn draw(frame: &mut Frame, app: &TuiApp) {
     let area = frame.area();
 
+    if app.state.view_mode == ViewMode::Detail && area.width < 100 {
+        draw_detail_takeover(frame, area, app);
+        return;
+    }
+
+    if app.state.view_mode == ViewMode::Detail && area.width >= 100 {
+        draw_detail_split(frame, area, app);
+        return;
+    }
+
+    draw_normal(frame, area, app);
+}
+
+fn draw_normal(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let ttl_extra = if app.ttl_deadline.is_some() { 1u16 } else { 0 };
     let banner_height = 5 + app.banner.extra_lines.len() as u16 + ttl_extra;
     let log_height = app.state.visible_rows as u16 + 3;
@@ -86,6 +100,56 @@ pub fn draw(frame: &mut Frame, app: &TuiApp) {
     }
 }
 
+fn draw_detail_split(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let ttl_extra = if app.ttl_deadline.is_some() { 1u16 } else { 0 };
+    let banner_height = 5 + app.banner.extra_lines.len() as u16 + ttl_extra;
+
+    let vert_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(banner_height),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    let banner_area = vert_layout[0];
+    let content_area = vert_layout[1];
+    let footer_area = vert_layout[2];
+
+    banner::render(
+        frame,
+        banner_area,
+        &app.banner,
+        &app.state,
+        app.ttl_deadline,
+    );
+
+    let h_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(content_area);
+
+    log_table::render(frame, h_layout[0], &app.state);
+    detail_panel::render(frame, h_layout[1], &app.state, app.is_share, app.is_pro);
+
+    render_footer(frame, footer_area, app);
+}
+
+fn draw_detail_takeover(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let vert_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Fill(1), Constraint::Length(1)])
+        .split(area);
+
+    let detail_area = vert_layout[0];
+    let footer_area = vert_layout[1];
+
+    detail_panel::render(frame, detail_area, &app.state, app.is_share, app.is_pro);
+
+    render_footer(frame, footer_area, app);
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let total = app.state.filtered_requests().len();
     let scroll_info = if total > 0 {
@@ -99,5 +163,6 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &TuiApp) {
         &app.state.view_mode,
         &app.state.filter_text,
         scroll_info,
+        &app.state.focus,
     );
 }

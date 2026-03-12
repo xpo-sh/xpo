@@ -9,3 +9,4 @@ ratatui = "0.30"
 crossterm = "0.29"
 fast_qr = "0.13"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+xpo-core = { path = "../xpo-core" }
