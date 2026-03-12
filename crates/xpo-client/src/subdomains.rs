@@ -1,16 +1,16 @@
-use console::style;
 use serde::Deserialize;
 use xpo_core::config::Config;
+use xpo_tui::subdomains_app::{SubdomainRow, SubdomainsData};
 
 #[derive(Debug, Deserialize)]
-struct SubdomainsResponse {
-    subdomains: Vec<SubdomainEntry>,
+struct ApiResponse {
+    subdomains: Vec<ApiSubdomain>,
     limit: i32,
     count: usize,
 }
 
 #[derive(Debug, Deserialize)]
-struct SubdomainEntry {
+struct ApiSubdomain {
     subdomain: String,
     created_at: String,
 }
@@ -24,14 +24,11 @@ fn format_age(created_at: &str) -> String {
     let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created_at) else {
         if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%dT%H:%M:%S%.f") {
             let now = chrono::Utc::now().naive_utc();
-            let dur = now.signed_duration_since(dt);
-            return format_duration(dur);
+            return format_duration(now.signed_duration_since(dt));
         }
         return String::new();
     };
-    let now = chrono::Utc::now();
-    let dur = now.signed_duration_since(dt);
-    format_duration(dur)
+    format_duration(chrono::Utc::now().signed_duration_since(dt))
 }
 
 fn format_duration(dur: chrono::TimeDelta) -> String {
@@ -46,7 +43,26 @@ fn format_duration(dur: chrono::TimeDelta) -> String {
     }
 }
 
-async fn fetch(config: &Config) -> Result<SubdomainsResponse, Box<dyn std::error::Error>> {
+fn to_tui_data(resp: ApiResponse) -> SubdomainsData {
+    SubdomainsData {
+        count: resp.count,
+        limit: resp.limit,
+        subdomains: resp
+            .subdomains
+            .into_iter()
+            .map(|s| {
+                let age = format_age(&s.created_at);
+                SubdomainRow {
+                    subdomain: s.subdomain,
+                    created_at: s.created_at,
+                    age,
+                }
+            })
+            .collect(),
+    }
+}
+
+async fn fetch(config: &Config) -> Result<ApiResponse, Box<dyn std::error::Error>> {
     let base = api_base(config);
     let token = config.auth.access_token.as_deref().unwrap_or_default();
 
@@ -68,8 +84,120 @@ async fn fetch(config: &Config) -> Result<SubdomainsResponse, Box<dyn std::error
     Ok(resp.json().await?)
 }
 
-async fn delete(config: &Config, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn fetch_blocking(config: &Config) -> SubdomainsData {
     let base = api_base(config);
+    let token = config
+        .auth
+        .access_token
+        .as_deref()
+        .unwrap_or_default()
+        .to_string();
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok();
+
+    let Some(client) = client else {
+        return SubdomainsData {
+            subdomains: vec![],
+            limit: 0,
+            count: 0,
+        };
+    };
+
+    let resp = client
+        .get(format!("{base}/api/subdomains"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .ok();
+
+    let Some(resp) = resp else {
+        return SubdomainsData {
+            subdomains: vec![],
+            limit: 0,
+            count: 0,
+        };
+    };
+
+    match resp.json::<ApiResponse>() {
+        Ok(data) => to_tui_data(data),
+        Err(_) => SubdomainsData {
+            subdomains: vec![],
+            limit: 0,
+            count: 0,
+        },
+    }
+}
+
+fn delete_blocking(config: &Config, name: &str) -> Result<(), String> {
+    let base = api_base(config);
+    let token = config
+        .auth
+        .access_token
+        .as_deref()
+        .unwrap_or_default()
+        .to_string();
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .delete(format!("{base}/api/subdomains/{name}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("API error: {body}"));
+    }
+
+    Ok(())
+}
+
+pub async fn list() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::load()?;
+    if !config.is_authenticated() {
+        return Err("not logged in - run: xpo login".into());
+    }
+
+    let data = fetch(&config).await?;
+
+    if data.limit == 0 {
+        println!(
+            "  {} Reserved subdomains require Pro plan",
+            console::style("i").cyan().bold()
+        );
+        return Ok(());
+    }
+
+    let initial = to_tui_data(data);
+    let config_r = config.clone();
+    let config_d = config.clone();
+
+    let rt = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        xpo_tui::subdomains_app::run(
+            initial,
+            move || rt.block_on(async { fetch_blocking(&config_r) }),
+            move |name| delete_blocking(&config_d, name),
+        )
+    })
+    .await??;
+
+    Ok(())
+}
+
+pub async fn remove(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::load()?;
+    if !config.is_authenticated() {
+        return Err("not logged in - run: xpo login".into());
+    }
+
+    let base = api_base(&config);
     let token = config.auth.access_token.as_deref().unwrap_or_default();
 
     let client = reqwest::Client::builder()
@@ -87,85 +215,10 @@ async fn delete(config: &Config, name: &str) -> Result<(), Box<dyn std::error::E
         return Err(format!("API error: {body}").into());
     }
 
-    Ok(())
-}
-
-pub async fn list() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load()?;
-    if !config.is_authenticated() {
-        return Err("not logged in - run: xpo login".into());
-    }
-
-    let data = fetch(&config).await?;
-
-    if data.limit == 0 {
-        println!(
-            "  {} Reserved subdomains require Pro plan",
-            style("i").cyan().bold()
-        );
-        return Ok(());
-    }
-
-    println!();
-    println!(
-        "  {} Reserved Subdomains ({}/{})",
-        style("\u{25cf}").cyan(),
-        style(data.count).cyan().bold(),
-        style(data.limit).dim()
-    );
-    println!();
-
-    if data.subdomains.is_empty() {
-        println!("    {} No reserved subdomains yet", style("\u{2022}").dim());
-        println!(
-            "    {} Use {} to auto-reserve",
-            style("\u{2022}").dim(),
-            style("xpo share -s <name>").cyan()
-        );
-    } else {
-        let max_len = data
-            .subdomains
-            .iter()
-            .map(|s| s.subdomain.len())
-            .max()
-            .unwrap_or(10);
-        let col = max_len.max(10);
-
-        for sub in &data.subdomains {
-            let age = format_age(&sub.created_at);
-            println!(
-                "    {}  {:<col$}  {}",
-                style("\u{25cf}").green(),
-                style(&sub.subdomain).white().bold(),
-                style(age).dim(),
-                col = col
-            );
-        }
-    }
-
-    println!();
-    println!(
-        "    {} Remove: {}",
-        style("tip").dim(),
-        style("xpo subdomains rm <name>").cyan()
-    );
-    println!();
-
-    Ok(())
-}
-
-pub async fn remove(name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load()?;
-    if !config.is_authenticated() {
-        return Err("not logged in - run: xpo login".into());
-    }
-
-    delete(&config, name).await?;
-
     println!(
         "  {} Removed '{}' from reserved subdomains",
-        style("\u{2713}").green().bold(),
-        style(name).white().bold()
+        console::style("\u{2713}").green().bold(),
+        console::style(name).white().bold()
     );
 
     Ok(())
