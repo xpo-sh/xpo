@@ -3,10 +3,16 @@ use console::style;
 use sha2::{Digest, Sha256};
 use xpo_core::config::Config;
 
-const DEFAULT_AUTH_URL: &str = "https://api.xpo.sh/auth/v1";
-
 fn auth_url() -> String {
-    std::env::var("XPO_AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string())
+    Config::load()
+        .map(|c| c.defaults.auth_url)
+        .unwrap_or_else(|_| "https://api.xpo.sh/auth/v1".to_string())
+}
+
+fn anon_key() -> String {
+    Config::load()
+        .map(|c| c.defaults.anon_key)
+        .unwrap_or_else(|_| String::new())
 }
 
 fn now() -> u64 {
@@ -140,6 +146,7 @@ pub async fn login(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/token?grant_type=pkce", auth))
+        .header("apikey", anon_key())
         .json(&serde_json::json!({
             "auth_code": code,
             "code_verifier": code_verifier,
@@ -202,6 +209,7 @@ pub async fn refresh_token() -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/token?grant_type=refresh_token", auth))
+        .header("apikey", anon_key())
         .json(&serde_json::json!({
             "refresh_token": refresh,
         }))

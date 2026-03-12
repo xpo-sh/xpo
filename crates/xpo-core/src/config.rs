@@ -7,6 +7,14 @@ fn default_server() -> String {
     "eu.xpo.sh".to_string()
 }
 
+fn default_auth_url() -> String {
+    "https://api.xpo.sh/auth/v1".to_string()
+}
+
+fn default_anon_key() -> String {
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzczMzE5NTMwLCJleHAiOjE5MzA5OTk1MzB9.zQuMyo6h9LpWkYf32ZzoJMY0kHCRuJtI1K7z5Bxe9iE".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
@@ -29,12 +37,18 @@ pub struct AuthConfig {
 pub struct DefaultsConfig {
     #[serde(default = "default_server")]
     pub server: String,
+    #[serde(default = "default_auth_url")]
+    pub auth_url: String,
+    #[serde(default = "default_anon_key")]
+    pub anon_key: String,
 }
 
 impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             server: default_server(),
+            auth_url: default_auth_url(),
+            anon_key: default_anon_key(),
         }
     }
 }
@@ -174,6 +188,8 @@ server = "us.xpo.sh"
             },
             defaults: DefaultsConfig {
                 server: "eu.xpo.sh".into(),
+                auth_url: default_auth_url(),
+                anon_key: default_anon_key(),
             },
         };
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -249,6 +265,8 @@ server = "us.xpo.sh"
             },
             defaults: DefaultsConfig {
                 server: "eu.xpo.sh".into(),
+                auth_url: default_auth_url(),
+                anon_key: default_anon_key(),
             },
         };
         config.clear_tokens();
