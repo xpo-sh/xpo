@@ -84,7 +84,10 @@ pub async fn run(
             Err(e) => {
                 let msg = e.to_string();
 
-                let is_fatal = msg.contains("server error:") || msg.contains("auth failed:");
+                let is_retryable_server_error =
+                    msg.contains("max ") || msg.contains("tunnel limit");
+                let is_fatal = (msg.contains("server error:") && !is_retryable_server_error)
+                    || msg.contains("auth failed:");
 
                 if is_fatal {
                     if use_tui {
