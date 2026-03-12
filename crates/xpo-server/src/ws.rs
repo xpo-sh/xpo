@@ -11,7 +11,7 @@ use xpo_core::auth::Claims;
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_INTERVAL_SECS, HEARTBEAT_TIMEOUT_SECS};
 
-const DEFAULT_FREE_MAX_TUNNELS: usize = 1;
+const DEFAULT_FREE_MAX_TUNNELS: usize = 3;
 const ABSOLUTE_MAX_TUNNELS_PER_USER: usize = 32;
 const DEFAULT_FREE_MAX_TTL_SECS: u64 = 3600;
 const TUNNEL_CHANNEL_SIZE: usize = 256;
@@ -459,7 +459,7 @@ mod tests {
         };
 
         let limits = plan_limits_from_claims(&claims);
-        assert_eq!(limits.max_tunnels, 1);
+        assert_eq!(limits.max_tunnels, 3);
         assert_eq!(limits.max_ttl_secs, Some(3600));
         assert!(!limits.allow_custom_subdomain);
     }
