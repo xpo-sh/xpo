@@ -35,6 +35,14 @@ pub async fn handle_http(
     if path == "/api/tunnels" {
         return Ok(tunnels_api_response(&state, &req));
     }
+    if path == "/api/subdomains" {
+        return Ok(subdomains_api_response(&state, &req).await);
+    }
+    if let Some(name) = path.strip_prefix("/api/subdomains/") {
+        if req.method() == hyper::Method::DELETE {
+            return Ok(subdomain_delete_response(&state, &req, name).await);
+        }
+    }
 
     let subdomain = extract_subdomain(&host, &state.config.base_domain);
 
@@ -338,10 +346,20 @@ fn healthz_response(state: &SharedState) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-fn tunnels_api_response(
+fn json_error(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
+    let body = serde_json::json!({"error": msg}).to_string();
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
+#[allow(clippy::result_large_err)]
+fn authenticate(
     state: &SharedState,
     req: &Request<hyper::body::Incoming>,
-) -> Response<Full<Bytes>> {
+) -> Result<String, Response<Full<Bytes>>> {
     let token = req
         .headers()
         .get("authorization")
@@ -350,29 +368,107 @@ fn tunnels_api_response(
 
     let token = match token {
         Some(t) => t,
-        None => {
-            let body = r#"{"error":"unauthorized"}"#;
+        None => return Err(json_error(StatusCode::UNAUTHORIZED, "unauthorized")),
+    };
+
+    match state.jwt_validator.validate(token) {
+        Ok(c) => Ok(c.sub),
+        Err(_) => Err(json_error(StatusCode::UNAUTHORIZED, "unauthorized")),
+    }
+}
+
+async fn subdomains_api_response(
+    state: &SharedState,
+    req: &Request<hyper::body::Incoming>,
+) -> Response<Full<Bytes>> {
+    let user_id = match authenticate(state, req) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let Some(ref supa) = state.supabase else {
+        return json_error(StatusCode::SERVICE_UNAVAILABLE, "not configured");
+    };
+
+    let profile = match supa.get_user_profile(&user_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            let body = serde_json::json!({
+                "subdomains": [],
+                "limit": 0,
+                "count": 0,
+            })
+            .to_string();
             return Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
+                .status(StatusCode::OK)
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(body)))
                 .unwrap();
         }
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "service error"),
     };
 
-    let claims = match state.jwt_validator.validate(token) {
-        Ok(c) => c,
-        Err(_) => {
-            let body = r#"{"error":"unauthorized"}"#;
-            return Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
+    let subs = match supa.get_user_subdomains(&user_id).await {
+        Ok(s) => s,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "service error"),
+    };
+
+    let body = serde_json::json!({
+        "subdomains": subs,
+        "limit": profile.max_reserved_subdomains,
+        "count": subs.len(),
+    })
+    .to_string();
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
+async fn subdomain_delete_response(
+    state: &SharedState,
+    req: &Request<hyper::body::Incoming>,
+    name: &str,
+) -> Response<Full<Bytes>> {
+    let user_id = match authenticate(state, req) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let Some(ref supa) = state.supabase else {
+        return json_error(StatusCode::SERVICE_UNAVAILABLE, "not configured");
+    };
+
+    match supa.get_subdomain_owner(name).await {
+        Ok(Some(owner)) if owner == user_id => {}
+        Ok(Some(_)) => return json_error(StatusCode::FORBIDDEN, "not your subdomain"),
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "subdomain not found"),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "service error"),
+    }
+
+    match supa.delete_subdomain(&user_id, name).await {
+        Ok(()) => {
+            let body = serde_json::json!({"ok": true}).to_string();
+            Response::builder()
+                .status(StatusCode::OK)
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(body)))
-                .unwrap();
+                .unwrap()
         }
-    };
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "delete failed"),
+    }
+}
 
-    let user_id = &claims.sub;
+fn tunnels_api_response(
+    state: &SharedState,
+    req: &Request<hyper::body::Incoming>,
+) -> Response<Full<Bytes>> {
+    let user_id = match authenticate(state, req) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let mut tunnels = Vec::new();
 
     for entry in state.tunnels.iter() {

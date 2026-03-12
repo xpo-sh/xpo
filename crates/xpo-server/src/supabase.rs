@@ -127,6 +127,55 @@ impl SupabaseClient {
         Ok(count)
     }
 
+    pub async fn get_user_subdomains(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let url = format!(
+            "{}/rest/v1/reserved_subdomains?user_id=eq.{}&select=subdomain,created_at&order=created_at.asc",
+            self.base_url, user_id
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await
+            .map_err(|e| format!("PostgREST query failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("PostgREST returned {}", resp.status()));
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| format!("PostgREST parse failed: {e}"))
+    }
+
+    pub async fn delete_subdomain(&self, user_id: &str, subdomain: &str) -> Result<(), String> {
+        let url = format!(
+            "{}/rest/v1/reserved_subdomains?subdomain=eq.{}&user_id=eq.{}",
+            self.base_url, subdomain, user_id
+        );
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await
+            .map_err(|e| format!("PostgREST delete failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("PostgREST returned {}", resp.status()));
+        }
+
+        Ok(())
+    }
+
     pub async fn reserve_subdomain(&self, user_id: &str, subdomain: &str) -> Result<(), String> {
         let url = format!("{}/rest/v1/reserved_subdomains", self.base_url);
 

@@ -5,6 +5,7 @@ mod dev;
 mod error_page;
 mod hmr;
 mod list;
+mod subdomains;
 mod tunnel;
 mod uninstall;
 mod update;
@@ -68,8 +69,19 @@ enum Commands {
         #[arg(long, help = "JSON output")]
         json: bool,
     },
+    #[command(about = "Manage reserved subdomains")]
+    Subdomains {
+        #[command(subcommand)]
+        command: Option<SubdomainCommands>,
+    },
     #[command(about = "Remove all xpo data from your system")]
     Uninstall,
+}
+
+#[derive(Subcommand)]
+enum SubdomainCommands {
+    #[command(about = "Remove a reserved subdomain")]
+    Rm { name: String },
 }
 
 #[derive(Args)]
@@ -223,6 +235,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Doctor => dev::doctor::run(),
         Commands::Update => update::run().await,
+        Commands::Subdomains { command } => match command {
+            None => subdomains::list().await,
+            Some(SubdomainCommands::Rm { name }) => subdomains::remove(&name).await,
+        },
         Commands::Uninstall => uninstall::run(),
         Commands::Status => {
             let config = xpo_core::config::Config::load().unwrap_or_default();
