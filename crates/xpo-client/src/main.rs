@@ -38,7 +38,10 @@ enum Commands {
         log_visible: usize,
         #[arg(long)]
         cors: bool,
-        #[arg(long, help = "Password protect tunnel")]
+        #[arg(
+            long,
+            help = "Password protect tunnel (Pro). Format: pass or user:pass"
+        )]
         password: Option<String>,
         #[arg(long, help = "Tunnel TTL (e.g. 30m, 2h)")]
         ttl: Option<String>,

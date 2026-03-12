@@ -50,8 +50,8 @@ pub async fn handle_http(
         return Ok(text_response(StatusCode::NOT_FOUND, "Tunnel not found", ""));
     }
 
-    let (tunnel_tx, tunnel_password) = match state.tunnels.get(&subdomain) {
-        Some(t) => (t.tx.clone(), t.password.clone()),
+    let (tunnel_tx, tunnel_username, tunnel_password) = match state.tunnels.get(&subdomain) {
+        Some(t) => (t.tx.clone(), t.username.clone(), t.password.clone()),
         None => {
             return Ok(text_response(
                 StatusCode::NOT_FOUND,
@@ -62,11 +62,12 @@ pub async fn handle_http(
     };
 
     if let Some(ref password) = tunnel_password {
+        let expected_user = tunnel_username.as_deref().unwrap_or("xpo");
         let authorized = req
             .headers()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .map(|v| verify_basic_auth(v, password))
+            .map(|v| verify_basic_auth(v, expected_user, password))
             .unwrap_or(false);
         if !authorized {
             return Ok(Response::builder()
@@ -294,13 +295,13 @@ async fn handle_ws_upgrade(
     Ok(resp)
 }
 
-fn verify_basic_auth(header_value: &str, expected_password: &str) -> bool {
+fn verify_basic_auth(header_value: &str, expected_user: &str, expected_password: &str) -> bool {
     use base64::Engine;
     let encoded = header_value.strip_prefix("Basic ").unwrap_or("");
     if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
         if let Ok(credentials) = String::from_utf8(decoded) {
-            if let Some((_user, pass)) = credentials.split_once(':') {
-                return pass == expected_password;
+            if let Some((user, pass)) = credentials.split_once(':') {
+                return user == expected_user && pass == expected_password;
             }
         }
     }
@@ -717,29 +718,34 @@ mod tests {
     #[test]
     fn verify_basic_auth_valid() {
         use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:secret123");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("xpo:secret123");
         let header = format!("Basic {encoded}");
-        assert!(verify_basic_auth(&header, "secret123"));
+        assert!(verify_basic_auth(&header, "xpo", "secret123"));
     }
 
     #[test]
-    fn verify_basic_auth_invalid() {
+    fn verify_basic_auth_invalid_password() {
         use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:wrongpass");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("xpo:wrongpass");
         let header = format!("Basic {encoded}");
-        assert!(!verify_basic_auth(&header, "secret123"));
+        assert!(!verify_basic_auth(&header, "xpo", "secret123"));
     }
 
     #[test]
-    fn verify_basic_auth_any_username() {
+    fn verify_basic_auth_invalid_username() {
         use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode("anyuser:mypass");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("wrong:secret123");
         let header = format!("Basic {encoded}");
-        assert!(verify_basic_auth(&header, "mypass"));
+        assert!(!verify_basic_auth(&header, "xpo", "secret123"));
+    }
 
-        let encoded2 = base64::engine::general_purpose::STANDARD.encode(":mypass");
-        let header2 = format!("Basic {encoded2}");
-        assert!(verify_basic_auth(&header2, "mypass"));
+    #[test]
+    fn verify_basic_auth_custom_username() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:mypass");
+        let header = format!("Basic {encoded}");
+        assert!(verify_basic_auth(&header, "admin", "mypass"));
+        assert!(!verify_basic_auth(&header, "xpo", "mypass"));
     }
 
     #[test]
@@ -759,6 +765,7 @@ mod tests {
                 user_id: "user-123".to_string(),
                 subdomain: "testapp".to_string(),
                 tx,
+                username: Some("xpo".to_string()),
                 password: Some("secret".to_string()),
                 port: 3000,
                 created_at: std::time::Instant::now(),

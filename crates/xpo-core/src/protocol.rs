@@ -47,6 +47,7 @@ pub enum ClientControl {
     Hello {
         port: u16,
         subdomain: Option<String>,
+        username: Option<String>,
         password: Option<String>,
         ttl_secs: Option<u64>,
     },
@@ -204,6 +205,7 @@ mod tests {
         let msg = ClientControl::Hello {
             port: 3000,
             subdomain: Some("myapp".into()),
+            username: None,
             password: None,
             ttl_secs: None,
         };
@@ -310,13 +312,17 @@ mod tests {
         let hello = ClientControl::Hello {
             port: 3000,
             subdomain: Some("myapp".to_string()),
+            username: Some("admin".to_string()),
             password: Some("secret123".to_string()),
             ttl_secs: None,
         };
         let json = hello.to_json().unwrap();
         let parsed = ClientControl::from_json(&json).unwrap();
         match parsed {
-            ClientControl::Hello { password, .. } => {
+            ClientControl::Hello {
+                username, password, ..
+            } => {
+                assert_eq!(username, Some("admin".to_string()));
                 assert_eq!(password, Some("secret123".to_string()));
             }
             _ => panic!("expected Hello"),
@@ -328,6 +334,7 @@ mod tests {
         let hello = ClientControl::Hello {
             port: 8080,
             subdomain: None,
+            username: None,
             password: None,
             ttl_secs: Some(1800),
         };
@@ -349,11 +356,13 @@ mod tests {
             ClientControl::Hello {
                 port,
                 subdomain,
+                username,
                 password,
                 ttl_secs,
             } => {
                 assert_eq!(port, 3000);
                 assert_eq!(subdomain, None);
+                assert_eq!(username, None);
                 assert_eq!(password, None);
                 assert_eq!(ttl_secs, None);
             }

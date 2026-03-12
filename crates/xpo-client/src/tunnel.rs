@@ -223,10 +223,12 @@ async fn connect_and_run(
     let (user, tunnel_url) = match auth_resp {
         Message::Text(text) => match ServerControl::from_json(&text)? {
             ServerControl::AuthOk { user, .. } => {
+                let (parsed_user, parsed_pass) = parse_password(&password);
                 let hello = ClientControl::Hello {
                     port,
                     subdomain,
-                    password: password.clone(),
+                    username: parsed_user,
+                    password: parsed_pass,
                     ttl_secs,
                 };
                 ws_write
@@ -1188,6 +1190,16 @@ async fn get_token() -> String {
     }
 }
 
+fn parse_password(password: &Option<String>) -> (Option<String>, Option<String>) {
+    match password {
+        Some(p) => match p.split_once(':') {
+            Some((user, pass)) => (Some(user.to_string()), Some(pass.to_string())),
+            None => (Some("xpo".to_string()), Some(p.to_string())),
+        },
+        None => (None, None),
+    }
+}
+
 fn is_pro_from_token(token: &str) -> bool {
     fn inner(token: &str) -> Option<bool> {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -1203,6 +1215,34 @@ fn is_pro_from_token(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_password_none() {
+        let (u, p) = parse_password(&None);
+        assert_eq!(u, None);
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn parse_password_only() {
+        let (u, p) = parse_password(&Some("secret".to_string()));
+        assert_eq!(u, Some("xpo".to_string()));
+        assert_eq!(p, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn parse_password_with_username() {
+        let (u, p) = parse_password(&Some("admin:secret".to_string()));
+        assert_eq!(u, Some("admin".to_string()));
+        assert_eq!(p, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn parse_password_colon_in_password() {
+        let (u, p) = parse_password(&Some("user:pass:word".to_string()));
+        assert_eq!(u, Some("user".to_string()));
+        assert_eq!(p, Some("pass:word".to_string()));
+    }
 
     #[test]
     fn rewrite_host_header_replaces_host() {
