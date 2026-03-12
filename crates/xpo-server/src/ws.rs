@@ -38,6 +38,7 @@ struct PlanLimits {
     max_tunnels: usize,
     max_ttl_secs: Option<u64>,
     allow_custom_subdomain: bool,
+    max_reserved_subdomains: usize,
 }
 
 impl PlanLimits {
@@ -46,6 +47,7 @@ impl PlanLimits {
             max_tunnels: DEFAULT_FREE_MAX_TUNNELS,
             max_ttl_secs: Some(DEFAULT_FREE_MAX_TTL_SECS),
             allow_custom_subdomain: false,
+            max_reserved_subdomains: 0,
         }
     }
 
@@ -58,6 +60,7 @@ impl PlanLimits {
             max_tunnels,
             max_ttl_secs,
             allow_custom_subdomain,
+            max_reserved_subdomains: profile.max_reserved_subdomains as usize,
         }
     }
 }
@@ -170,49 +173,92 @@ where
             }
         };
 
-    let (subdomain, tunnel_password, tunnel_ttl, tunnel_port) =
-        match ClientControl::from_json(&hello_msg) {
-            Ok(ClientControl::Hello {
-                port,
-                subdomain,
-                password,
-                ttl_secs,
-            }) => {
-                if subdomain.is_some() && !plan_limits.allow_custom_subdomain {
-                    let resp = ServerControl::Error {
-                        message: "custom subdomains require Pro".into(),
-                    };
-                    let _ = ws_write
-                        .send(Message::Text(resp.to_json().unwrap().into()))
-                        .await;
-                    return;
-                }
-                let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
-                if !is_valid_subdomain(&sub) {
-                    let resp = ServerControl::Error {
-                        message: "invalid subdomain".into(),
-                    };
-                    let _ = ws_write
-                        .send(Message::Text(resp.to_json().unwrap().into()))
-                        .await;
-                    warn!(subdomain = %sub, "invalid subdomain");
-                    return;
-                }
-                let effective_ttl = plan_limits
-                    .max_ttl_secs
-                    .map(|max_ttl| ttl_secs.unwrap_or(max_ttl).min(max_ttl));
-                (sub, password, effective_ttl, port)
-            }
-            _ => {
+    let (subdomain, tunnel_password, tunnel_ttl, tunnel_port) = match ClientControl::from_json(
+        &hello_msg,
+    ) {
+        Ok(ClientControl::Hello {
+            port,
+            subdomain,
+            password,
+            ttl_secs,
+        }) => {
+            if subdomain.is_some() && !plan_limits.allow_custom_subdomain {
                 let resp = ServerControl::Error {
-                    message: "expected Hello message".into(),
+                    message: "custom subdomains require Pro".into(),
                 };
                 let _ = ws_write
                     .send(Message::Text(resp.to_json().unwrap().into()))
                     .await;
                 return;
             }
-        };
+            let is_custom = subdomain.is_some();
+            let sub = subdomain.unwrap_or_else(crate::state::ServerState::generate_subdomain);
+            if !is_valid_subdomain(&sub) {
+                let resp = ServerControl::Error {
+                    message: "invalid subdomain".into(),
+                };
+                let _ = ws_write
+                    .send(Message::Text(resp.to_json().unwrap().into()))
+                    .await;
+                warn!(subdomain = %sub, "invalid subdomain");
+                return;
+            }
+            if is_custom {
+                if let Some(ref supa) = state.supabase {
+                    match supa.get_subdomain_owner(&sub).await {
+                        Ok(Some(owner)) if owner != user_id => {
+                            let resp = ServerControl::Error {
+                                message: format!("subdomain '{}' is reserved by another user", sub),
+                            };
+                            let _ = ws_write
+                                .send(Message::Text(resp.to_json().unwrap().into()))
+                                .await;
+                            return;
+                        }
+                        Ok(Some(_)) => {
+                            info!(subdomain = %sub, user_id = %user_id, "using own reserved subdomain");
+                        }
+                        Ok(None) => {
+                            if plan_limits.max_reserved_subdomains > 0 {
+                                match supa.get_user_reserved_count(&user_id).await {
+                                    Ok(count) if count >= plan_limits.max_reserved_subdomains => {
+                                        warn!(user_id = %user_id, count, limit = plan_limits.max_reserved_subdomains, "reserved subdomain limit reached, tunnel opens without reserving");
+                                    }
+                                    Ok(_) => {
+                                        if let Err(e) = supa.reserve_subdomain(&user_id, &sub).await
+                                        {
+                                            warn!(subdomain = %sub, error = %e, "failed to auto-reserve subdomain");
+                                        } else {
+                                            info!(subdomain = %sub, user_id = %user_id, "auto-reserved subdomain");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to check reserved count");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "failed to check subdomain ownership, allowing tunnel");
+                        }
+                    }
+                }
+            }
+            let effective_ttl = plan_limits
+                .max_ttl_secs
+                .map(|max_ttl| ttl_secs.unwrap_or(max_ttl).min(max_ttl));
+            (sub, password, effective_ttl, port)
+        }
+        _ => {
+            let resp = ServerControl::Error {
+                message: "expected Hello message".into(),
+            };
+            let _ = ws_write
+                .send(Message::Text(resp.to_json().unwrap().into()))
+                .await;
+            return;
+        }
+    };
 
     let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelMessage>(TUNNEL_CHANNEL_SIZE);
     let relay_control_tx = tunnel_tx.clone();
