@@ -56,11 +56,12 @@ pub async fn run(
 
     let mut backoff = RECONNECT_MIN_SECS;
     let mut first_connect = true;
+    let mut active_subdomain = subdomain.clone();
 
     loop {
         match connect_and_run(
             port,
-            subdomain.clone(),
+            active_subdomain.clone(),
             server,
             cors,
             &http_client,
@@ -75,12 +76,26 @@ pub async fn run(
             password.clone(),
             ttl_secs,
             hmr_mode,
+            &mut active_subdomain,
         )
         .await
         {
             Ok(()) => break,
             Err(e) => {
                 let msg = e.to_string();
+
+                let is_fatal = msg.contains("server error:") || msg.contains("auth failed:");
+
+                if is_fatal {
+                    if use_tui {
+                        let _ = app_tx.send(AppEvent::Connection(ConnStatus::Disconnected {
+                            reason: msg.clone(),
+                        }));
+                    }
+                    eprintln!("  {} {}", console::style("!").red().bold(), msg,);
+                    break;
+                }
+
                 let short = if msg.contains("Connection refused") {
                     "server unreachable"
                 } else if msg.contains("Connection reset") {
@@ -185,6 +200,7 @@ async fn connect_and_run(
     password: Option<String>,
     ttl_secs: Option<u64>,
     hmr_mode: HmrMode,
+    active_subdomain: &mut Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = if server.starts_with("localhost") || server.starts_with("127.0.0.1") {
         format!("ws://{server}")
@@ -241,6 +257,13 @@ async fn connect_and_run(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(ttl);
         let _ = app_tx.send(AppEvent::TtlDeadline(deadline));
     }
+
+    *active_subdomain = tunnel_url
+        .replace("https://", "")
+        .replace("http://", "")
+        .split('.')
+        .next()
+        .map(|s| s.to_string());
 
     let hmr_context = HmrContext::from_tunnel_url(&tunnel_url, hmr_mode);
 
