@@ -2,6 +2,7 @@ mod acme;
 mod config;
 mod http;
 mod state;
+mod supabase;
 mod tls;
 mod ws;
 
@@ -87,7 +88,21 @@ async fn main() {
         }
     }
 
-    let state = state::ServerState::new(config, jwt_validator);
+    let supabase = match (&config.supabase_url, &config.supabase_service_role_key) {
+        (Some(url), Some(key)) => {
+            info!(url = %url, "Supabase client configured");
+            Some(Arc::new(supabase::SupabaseClient::new(
+                url.clone(),
+                key.clone(),
+            )))
+        }
+        _ => {
+            info!("Supabase not configured, using free defaults for plan enforcement");
+            None
+        }
+    };
+
+    let state = state::ServerState::new(config, jwt_validator, supabase);
     let http_semaphore = Arc::new(Semaphore::new(MAX_HTTP_CONNECTIONS));
     let ws_semaphore = Arc::new(Semaphore::new(MAX_WS_CONNECTIONS));
 

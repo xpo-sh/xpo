@@ -3,7 +3,7 @@ use console::style;
 use sha2::{Digest, Sha256};
 use xpo_core::config::Config;
 
-const DEFAULT_AUTH_URL: &str = "https://auth.xpo.sh";
+const DEFAULT_AUTH_URL: &str = "https://api.xpo.sh/auth/v1";
 
 fn auth_url() -> String {
     std::env::var("XPO_AUTH_URL").unwrap_or_else(|_| DEFAULT_AUTH_URL.to_string())

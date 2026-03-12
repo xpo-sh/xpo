@@ -28,6 +28,9 @@ pub struct ServerConfig {
     pub acme_account_path: String,
     pub cf_api_token: Option<String>,
     pub cf_zone_id: Option<String>,
+
+    pub supabase_url: Option<String>,
+    pub supabase_service_role_key: Option<String>,
 }
 
 impl ServerConfig {
@@ -80,6 +83,9 @@ impl ServerConfig {
             acme_account_path: env_str("ACME_ACCOUNT_PATH", "/etc/xpo/acme/account.json"),
             cf_api_token: std::env::var("CF_API_TOKEN").ok(),
             cf_zone_id: std::env::var("CF_ZONE_ID").ok(),
+
+            supabase_url: std::env::var("SUPABASE_URL").ok(),
+            supabase_service_role_key: std::env::var("SUPABASE_SERVICE_ROLE_KEY").ok(),
         }
     }
 

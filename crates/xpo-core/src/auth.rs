@@ -12,10 +12,6 @@ pub struct Claims {
     pub iat: u64,
     pub email: Option<String>,
     pub role: Option<String>,
-    pub xpo_plan: Option<String>,
-    pub xpo_max_tunnels: Option<u64>,
-    pub xpo_max_ttl_secs: Option<u64>,
-    pub xpo_allow_custom_subdomain: Option<bool>,
 }
 
 pub struct JwtValidator {
@@ -116,10 +112,6 @@ mod tests {
             iat: now,
             email: Some("test@xpo.sh".into()),
             role: Some("authenticated".into()),
-            xpo_plan: None,
-            xpo_max_tunnels: None,
-            xpo_max_ttl_secs: None,
-            xpo_allow_custom_subdomain: None,
         }
     }
 

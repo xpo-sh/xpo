@@ -6,12 +6,11 @@ use std::sync::LazyLock;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{info, warn};
-use xpo_core::auth::Claims;
+use tracing::{error, info, warn};
 use xpo_core::protocol::{ClientControl, Packet, PacketType, ServerControl};
 use xpo_core::{HEARTBEAT_INTERVAL_SECS, HEARTBEAT_TIMEOUT_SECS};
 
-const DEFAULT_FREE_MAX_TUNNELS: usize = 3;
+const DEFAULT_FREE_MAX_TUNNELS: usize = 6;
 const ABSOLUTE_MAX_TUNNELS_PER_USER: usize = 32;
 const DEFAULT_FREE_MAX_TTL_SECS: u64 = 3600;
 const TUNNEL_CHANNEL_SIZE: usize = 256;
@@ -41,27 +40,25 @@ struct PlanLimits {
     allow_custom_subdomain: bool,
 }
 
-fn plan_limits_from_claims(claims: &Claims) -> PlanLimits {
-    let plan = claims.xpo_plan.as_deref().unwrap_or("free");
-    let requested_max_tunnels = claims
-        .xpo_max_tunnels
-        .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(match plan {
-            "pro" | "team" => ABSOLUTE_MAX_TUNNELS_PER_USER,
-            _ => DEFAULT_FREE_MAX_TUNNELS,
-        });
+impl PlanLimits {
+    fn free_defaults() -> Self {
+        Self {
+            max_tunnels: DEFAULT_FREE_MAX_TUNNELS,
+            max_ttl_secs: Some(DEFAULT_FREE_MAX_TTL_SECS),
+            allow_custom_subdomain: false,
+        }
+    }
 
-    let max_ttl_secs = match claims.xpo_max_ttl_secs {
-        Some(value) => Some(value),
-        None if matches!(plan, "pro" | "team") => None,
-        None => Some(DEFAULT_FREE_MAX_TTL_SECS),
-    };
+    fn from_profile(profile: &crate::supabase::UserProfile) -> Self {
+        let max_tunnels = (profile.max_tunnels as usize).min(ABSOLUTE_MAX_TUNNELS_PER_USER);
+        let max_ttl_secs = profile.max_ttl_secs.map(|v| v as u64);
+        let allow_custom_subdomain = matches!(profile.plan.as_str(), "pro" | "team");
 
-    PlanLimits {
-        max_tunnels: requested_max_tunnels.min(ABSOLUTE_MAX_TUNNELS_PER_USER),
-        max_ttl_secs,
-        allow_custom_subdomain: claims.xpo_allow_custom_subdomain.unwrap_or(false),
+        Self {
+            max_tunnels,
+            max_ttl_secs,
+            allow_custom_subdomain,
+        }
     }
 }
 
@@ -100,7 +97,27 @@ where
         Ok(ClientControl::Auth { token }) => match state.jwt_validator.validate(&token) {
             Ok(claims) => {
                 user_id = claims.sub.clone();
-                plan_limits = plan_limits_from_claims(&claims);
+                plan_limits = if let Some(ref supa) = state.supabase {
+                    match supa.get_user_profile(&user_id).await {
+                        Ok(Some(profile)) => PlanLimits::from_profile(&profile),
+                        Ok(None) => {
+                            warn!(user_id = %user_id, "no user profile found, using free defaults");
+                            PlanLimits::free_defaults()
+                        }
+                        Err(e) => {
+                            error!(user_id = %user_id, error = %e, "PostgREST query failed");
+                            let resp = ServerControl::Error {
+                                message: "service temporarily unavailable".into(),
+                            };
+                            let _ = ws_write
+                                .send(Message::Text(resp.to_json().unwrap().into()))
+                                .await;
+                            return;
+                        }
+                    }
+                } else {
+                    PlanLimits::free_defaults()
+                };
                 let resp = ServerControl::AuthOk {
                     user: claims.email.unwrap_or_default(),
                     user_id: claims.sub,
@@ -444,44 +461,72 @@ mod tests {
     }
 
     #[test]
-    fn plan_limits_default_to_free() {
-        let claims = Claims {
-            sub: "user".into(),
-            aud: "authenticated".into(),
-            exp: 9999999999,
-            iat: 1,
-            email: None,
-            role: Some("authenticated".into()),
-            xpo_plan: None,
-            xpo_max_tunnels: None,
-            xpo_max_ttl_secs: None,
-            xpo_allow_custom_subdomain: None,
+    fn plan_limits_free_defaults() {
+        let limits = PlanLimits::free_defaults();
+        assert_eq!(limits.max_tunnels, DEFAULT_FREE_MAX_TUNNELS);
+        assert_eq!(limits.max_ttl_secs, Some(DEFAULT_FREE_MAX_TTL_SECS));
+        assert!(!limits.allow_custom_subdomain);
+    }
+
+    #[test]
+    fn plan_limits_from_pro_profile() {
+        let profile = crate::supabase::UserProfile {
+            id: "user-123".into(),
+            plan: "pro".into(),
+            max_tunnels: 32,
+            max_ttl_secs: None,
+            max_reserved_subdomains: 5,
         };
 
-        let limits = plan_limits_from_claims(&claims);
-        assert_eq!(limits.max_tunnels, 3);
+        let limits = PlanLimits::from_profile(&profile);
+        assert_eq!(limits.max_tunnels, ABSOLUTE_MAX_TUNNELS_PER_USER);
+        assert_eq!(limits.max_ttl_secs, None);
+        assert!(limits.allow_custom_subdomain);
+    }
+
+    #[test]
+    fn plan_limits_from_team_profile() {
+        let profile = crate::supabase::UserProfile {
+            id: "user-456".into(),
+            plan: "team".into(),
+            max_tunnels: 20,
+            max_ttl_secs: Some(7200),
+            max_reserved_subdomains: 10,
+        };
+
+        let limits = PlanLimits::from_profile(&profile);
+        assert_eq!(limits.max_tunnels, 20);
+        assert_eq!(limits.max_ttl_secs, Some(7200));
+        assert!(limits.allow_custom_subdomain);
+    }
+
+    #[test]
+    fn plan_limits_from_free_profile() {
+        let profile = crate::supabase::UserProfile {
+            id: "user-789".into(),
+            plan: "free".into(),
+            max_tunnels: 6,
+            max_ttl_secs: Some(3600),
+            max_reserved_subdomains: 0,
+        };
+
+        let limits = PlanLimits::from_profile(&profile);
+        assert_eq!(limits.max_tunnels, 6);
         assert_eq!(limits.max_ttl_secs, Some(3600));
         assert!(!limits.allow_custom_subdomain);
     }
 
     #[test]
-    fn plan_limits_support_pro_defaults() {
-        let claims = Claims {
-            sub: "user".into(),
-            aud: "authenticated".into(),
-            exp: 9999999999,
-            iat: 1,
-            email: None,
-            role: Some("authenticated".into()),
-            xpo_plan: Some("pro".into()),
-            xpo_max_tunnels: None,
-            xpo_max_ttl_secs: None,
-            xpo_allow_custom_subdomain: Some(true),
+    fn plan_limits_caps_at_absolute_max() {
+        let profile = crate::supabase::UserProfile {
+            id: "user-999".into(),
+            plan: "pro".into(),
+            max_tunnels: 100,
+            max_ttl_secs: None,
+            max_reserved_subdomains: 50,
         };
 
-        let limits = plan_limits_from_claims(&claims);
+        let limits = PlanLimits::from_profile(&profile);
         assert_eq!(limits.max_tunnels, ABSOLUTE_MAX_TUNNELS_PER_USER);
-        assert_eq!(limits.max_ttl_secs, None);
-        assert!(limits.allow_custom_subdomain);
     }
 }

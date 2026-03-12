@@ -1,4 +1,5 @@
 use crate::config::ServerConfig;
+use crate::supabase::SupabaseClient;
 use dashmap::DashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +20,7 @@ pub struct ServerState {
     pub subdomain_streams: DashMap<String, HashSet<StreamId>>,
     pub config: Arc<ServerConfig>,
     pub jwt_validator: Arc<JwtValidator>,
+    pub supabase: Option<Arc<SupabaseClient>>,
 }
 
 #[allow(dead_code)]
@@ -57,7 +59,11 @@ pub struct ActiveStream {
 }
 
 impl ServerState {
-    pub fn new(config: Arc<ServerConfig>, jwt_validator: Arc<JwtValidator>) -> SharedState {
+    pub fn new(
+        config: Arc<ServerConfig>,
+        jwt_validator: Arc<JwtValidator>,
+        supabase: Option<Arc<SupabaseClient>>,
+    ) -> SharedState {
         Arc::new(Self {
             tunnels: DashMap::new(),
             pending: DashMap::new(),
@@ -66,6 +72,7 @@ impl ServerState {
             subdomain_streams: DashMap::new(),
             config,
             jwt_validator,
+            supabase,
         })
     }
 

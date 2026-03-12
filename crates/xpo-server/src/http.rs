@@ -654,7 +654,7 @@ mod tests {
 
         let config = ServerConfig::from_env();
         let jwt_validator = Arc::new(xpo_core::auth::JwtValidator::new(&config.jwt_key_material));
-        let state = ServerState::new(Arc::new(config), jwt_validator);
+        let state = ServerState::new(Arc::new(config), jwt_validator, None);
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TunnelMessage>(1);
         state.tunnels.insert(
